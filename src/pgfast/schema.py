@@ -287,18 +287,18 @@ class SchemaManager:
 
         # Create files with templates
         up_template = f"""-- Migration: {name}
-    -- Created: {datetime.now().isoformat()}
-    --
-    -- Add your UP migration SQL here
+-- Created: {datetime.now().isoformat()}
+--
+-- Add your UP migration SQL here
 
-    """
+"""
 
         down_template = f"""-- Migration: {name} (rollback)
-    -- Created: {datetime.now().isoformat()}
-    --
-    -- Add your DOWN migration SQL here (should reverse the UP migration)
+-- Created: {datetime.now().isoformat()}
+--
+-- Add your DOWN migration SQL here (should reverse the UP migration)
 
-    """
+"""
 
         up_file.write_text(up_template)
         down_file.write_text(down_template)
