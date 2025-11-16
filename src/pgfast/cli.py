@@ -1,14 +1,12 @@
 """CLI interface for pgfast."""
 
+import argparse
 import asyncio
+import sys
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
 
 import asyncpg
-import typer
-from rich.console import Console
-from rich.table import Table
 
 from pgfast.config import DatabaseConfig
 from pgfast.connection import close_pool, create_pool
@@ -16,19 +14,47 @@ from pgfast.exceptions import PgfastError
 from pgfast.schema import SchemaManager
 from pgfast.testing import TestDatabaseManager, _pool_db_names
 
-app = typer.Typer(
-    name="pgfast",
-    help="pgfast - Lightweight asyncpg integration for FastAPI",
-    add_completion=False,
-)
+# ANSI color codes
+RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+CYAN = "\033[36m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
 
-migration_app = typer.Typer(help="Migration commands")
-app.add_typer(migration_app, name="schema")
 
-test_db_app = typer.Typer(help="Test database commands")
-app.add_typer(test_db_app, name="test-db")
+def print_table(headers: list[str], rows: list[list[str]]) -> None:
+    """Print a simple aligned table."""
+    if not rows:
+        return
 
-console = Console()
+    # Calculate column widths
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(str(cell)))
+
+    # Print header
+    header_row = "  ".join(h.ljust(w) for h, w in zip(headers, widths))
+    print(f"{BOLD}{header_row}{RESET}")
+    print("-" * (len(header_row) + len(headers) * 2))
+
+    # Print rows
+    for row in rows:
+        print("  ".join(str(cell).ljust(w) for cell, w in zip(row, widths)))
+
+
+def confirm(message: str) -> bool:
+    """Prompt user for yes/no confirmation."""
+    while True:
+        response = input(f"{message} (y/n): ").lower().strip()
+        if response in ("y", "yes"):
+            return True
+        elif response in ("n", "no"):
+            return False
+        else:
+            print("Please enter 'y' or 'n'")
 
 
 def get_config() -> DatabaseConfig:
@@ -37,48 +63,35 @@ def get_config() -> DatabaseConfig:
 
     url = os.getenv("DATABASE_URL")
     if not url:
-        console.print("[red]ERROR:[/red] DATABASE_URL environment variable not set")
-        raise typer.Exit(1)
+        print(f"{RED}ERROR:{RESET} DATABASE_URL environment variable not set")
+        sys.exit(1)
+    else:
+        return DatabaseConfig(
+            url=url,
+            migrations_dir=os.getenv("PGFAST_MIGRATIONS_DIR", "db/migrations"),
+            fixtures_dir=os.getenv("PGFAST_FIXTURES_DIR", "db/fixtures"),
+        )
 
-    return DatabaseConfig(
-        url=url,
-        migrations_dir=os.getenv("PGFAST_MIGRATIONS_DIR", "db/migrations"),
-        fixtures_dir=os.getenv("PGFAST_FIXTURES_DIR", "db/fixtures"),
-    )
 
-
-@app.command()
-def init(
-    migrations_dir: str = typer.Option(
-        "db/migrations", "--migrations-dir", "-m", help="Migrations directory path"
-    ),
-):
+def cmd_init(args: argparse.Namespace) -> None:
     """Initialize pgfast directory structure."""
     dirs = [
-        Path(migrations_dir),
+        Path(args.migrations_dir),
         Path("db/fixtures"),
     ]
 
     for dir_path in dirs:
         dir_path.mkdir(parents=True, exist_ok=True)
-        console.print(f"✓ Created directory: {dir_path}")
+        print(f"✓ Created directory: {dir_path}")
 
-    console.print("\n[green]Initialization complete![/green]")
-    console.print("\nNext steps:")
-    console.print("  1. Set DATABASE_URL environment variable")
-    console.print("  2. Run 'pgfast schema create' to create your first migration")
-    console.print("  3. Edit migration files and run 'pgfast schema up'")
+    print(f"\n{GREEN}Initialization complete!{RESET}")
+    print("\nNext steps:")
+    print("  1. Set DATABASE_URL environment variable")
+    print("  2. Run 'pgfast schema create' to create your first migration")
+    print("  3. Edit migration files and run 'pgfast schema up'")
 
 
-@migration_app.command("create")
-def create_migration(
-    name: str = typer.Argument(..., help="Migration name"),
-    no_depends: bool = typer.Option(
-        False,
-        "--no-depends",
-        help="Don't auto-depend on latest migration (for parallel development)",
-    ),
-):
+def cmd_schema_create(args: argparse.Namespace) -> None:
     """Create a new migration file pair.
 
     By default, new migrations automatically depend on the latest existing migration.
@@ -93,44 +106,28 @@ def create_migration(
             migrations_dir=config.migrations_dir,
         )
 
-        up_file, down_file = manager.create_migration(name, auto_depend=not no_depends)
+        up_file, down_file = manager.create_migration(
+            args.name, auto_depend=not args.no_depends
+        )
 
-        console.print("\n[green]✓ Created migration files:[/green]")
-        console.print(f"  UP:   {up_file}")
-        console.print(f"  DOWN: {down_file}")
+        print(f"\n{GREEN}✓ Created migration files:{RESET}")
+        print(f"  UP:   {up_file}")
+        print(f"  DOWN: {down_file}")
 
-        if not no_depends:
+        if not args.no_depends:
             # Check if dependency was added
             content = up_file.read_text()
             if "depends_on:" in content:
-                console.print("\n[dim]Auto-dependency added to latest migration[/dim]")
+                print(f"\n{DIM}Auto-dependency added to latest migration{RESET}")
 
-        console.print("\nEdit these files to add your migration SQL.")
+        print("\nEdit these files to add your migration SQL.")
 
     except PgfastError as e:
-        console.print(f"[red]ERROR:[/red] {e}")
-        raise typer.Exit(1)
+        print(f"{RED}ERROR:{RESET} {e}")
+        sys.exit(1)
 
 
-@migration_app.command("up")
-def schema_up(
-    target: Optional[int] = typer.Option(
-        None,
-        "--target",
-        "-t",
-        help="Target version to migrate to (default: all pending)",
-    ),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run",
-        help="Show what would be applied without executing",
-    ),
-    force: bool = typer.Option(
-        False,
-        "--force",
-        help="Skip checksum validation",
-    ),
-):
+def cmd_schema_up(args: argparse.Namespace) -> None:
     """Apply pending migrations."""
 
     async def _run():
@@ -143,84 +140,64 @@ def schema_up(
                 migrations_dir=config.migrations_dir,
             )
 
-            if dry_run:
-                console.print("[bold]DRY RUN MODE - No changes will be made[/bold]\n")
+            if args.dry_run:
+                print(f"{BOLD}DRY RUN MODE - No changes will be made{RESET}\n")
 
             # Get pending migrations to show preview
             pending = await manager.get_pending_migrations()
 
-            if target is not None:
-                pending = [m for m in pending if m.version <= target]
+            if args.target is not None:
+                pending = [m for m in pending if m.version <= args.target]
 
             if not pending:
-                console.print("[yellow]No pending migrations to apply.[/yellow]")
+                print(f"{YELLOW}No pending migrations to apply.{RESET}")
                 return
 
             # Show detailed preview in dry-run mode
-            if dry_run:
-                console.print(
-                    f"[bold]Would apply {len(pending)} migration(s):[/bold]\n"
-                )
+            if args.dry_run:
+                print(f"{BOLD}Would apply {len(pending)} migration(s):{RESET}\n")
 
                 for migration in pending:
                     preview = manager.preview_migration(migration, "up")
 
-                    console.print(
-                        f"[cyan]Migration {preview['version']}:[/cyan] {preview['name']}"
+                    print(
+                        f"{CYAN}Migration {preview['version']}:{RESET} {preview['name']}"
                     )
 
                     if preview["dependencies"]:
-                        console.print(
+                        print(
                             f"  Dependencies: {', '.join(map(str, preview['dependencies']))}"
                         )
 
-                    console.print(f"  Checksum: {preview['checksum'][:16]}...")
-                    console.print(f"  SQL Preview ({preview['total_lines']} lines):")
-                    console.print(f"[dim]{preview['sql_preview']}[/dim]\n")
+                    print(f"  Checksum: {preview['checksum'][:16]}...")
+                    print(f"  SQL Preview ({preview['total_lines']} lines):")
+                    print(f"{DIM}{preview['sql_preview']}{RESET}\n")
 
                 return
 
             # Apply migrations
-            console.print("Checking for pending migrations...")
-            applied = await manager.schema_up(target=target, dry_run=False, force=force)
+            print("Checking for pending migrations...")
+            applied = await manager.schema_up(
+                target=args.target, dry_run=False, force=args.force
+            )
 
             if applied:
-                console.print(
-                    f"\n[green]✓ Applied {len(applied)} migration(s):[/green]"
-                )
+                print(f"\n{GREEN}✓ Applied {len(applied)} migration(s):{RESET}")
                 for version in applied:
-                    console.print(f"  - {version}")
+                    print(f"  - {version}")
             else:
-                console.print("[yellow]No pending migrations to apply.[/yellow]")
+                print(f"{YELLOW}No pending migrations to apply.{RESET}")
 
         except PgfastError as e:
-            console.print(f"\n[red]ERROR:[/red] {e}")
-            raise typer.Exit(1)
+            print(f"\n{RED}ERROR:{RESET} {e}")
+            sys.exit(1)
         finally:
             await close_pool(pool)
 
     asyncio.run(_run())
 
 
-@migration_app.command("down")
-def schema_down(
-    steps: int = typer.Option(
-        1, "--steps", "-s", help="Number of migrations to rollback"
-    ),
-    target: Optional[int] = typer.Option(
-        None, "--target", "-t", help="Target version to rollback to"
-    ),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run",
-        help="Show what would be rolled back without executing",
-    ),
-    force: bool = typer.Option(
-        False,
-        "--force",
-        help="Skip checksum validation",
-    ),
-):
+def cmd_schema_down(args: argparse.Namespace) -> None:
     """Rollback migrations."""
 
     async def _run():
@@ -233,33 +210,33 @@ def schema_down(
                 migrations_dir=config.migrations_dir,
             )
 
-            if dry_run:
-                console.print("[bold]DRY RUN MODE - No changes will be made[/bold]\n")
+            if args.dry_run:
+                print(f"{BOLD}DRY RUN MODE - No changes will be made{RESET}\n")
 
             # Get applied migrations to determine what would be rolled back
             applied = await manager.get_applied_migrations()
 
             if not applied:
-                console.print("[yellow]No migrations to rollback.[/yellow]")
+                print(f"{YELLOW}No migrations to rollback.{RESET}")
                 return
 
             # Determine which migrations would be rolled back
-            if target is not None:
-                to_rollback_versions = [v for v in reversed(applied) if v > target]
+            if args.target is not None:
+                to_rollback_versions = [v for v in reversed(applied) if v > args.target]
             else:
-                to_rollback_versions = list(reversed(applied[-steps:]))
+                to_rollback_versions = list(reversed(applied[-args.steps :]))
 
             if not to_rollback_versions:
-                console.print("[yellow]No migrations to rollback.[/yellow]")
+                print(f"{YELLOW}No migrations to rollback.{RESET}")
                 return
 
             # Show detailed preview in dry-run mode
-            if dry_run:
+            if args.dry_run:
                 all_migrations = manager._discover_migrations()
                 migration_map = {m.version: m for m in all_migrations}
 
-                console.print(
-                    f"[bold]Would rollback {len(to_rollback_versions)} migration(s):[/bold]\n"
+                print(
+                    f"{BOLD}Would rollback {len(to_rollback_versions)} migration(s):{RESET}\n"
                 )
 
                 for version in to_rollback_versions:
@@ -267,49 +244,44 @@ def schema_down(
                     if migration:
                         preview = manager.preview_migration(migration, "down")
 
-                        console.print(
-                            f"[cyan]Migration {preview['version']}:[/cyan] {preview['name']}"
+                        print(
+                            f"{CYAN}Migration {preview['version']}:{RESET} {preview['name']}"
                         )
 
                         if preview["dependencies"]:
-                            console.print(
+                            print(
                                 f"  Dependencies: {', '.join(map(str, preview['dependencies']))}"
                             )
 
-                        console.print(f"  Checksum: {preview['checksum'][:16]}...")
-                        console.print(
-                            f"  SQL Preview ({preview['total_lines']} lines):"
-                        )
-                        console.print(f"[dim]{preview['sql_preview']}[/dim]\n")
+                        print(f"  Checksum: {preview['checksum'][:16]}...")
+                        print(f"  SQL Preview ({preview['total_lines']} lines):")
+                        print(f"{DIM}{preview['sql_preview']}{RESET}\n")
 
                 return
 
             # Rollback migrations
-            console.print("Rolling back migrations...")
+            print("Rolling back migrations...")
             rolled_back = await manager.schema_down(
-                target=target, steps=steps, dry_run=False, force=force
+                target=args.target, steps=args.steps, dry_run=False, force=args.force
             )
 
             if rolled_back:
-                console.print(
-                    f"\n[green]✓ Rolled back {len(rolled_back)} migration(s):[/green]"
-                )
+                print(f"\n{GREEN}✓ Rolled back {len(rolled_back)} migration(s):{RESET}")
                 for version in rolled_back:
-                    console.print(f"  - {version}")
+                    print(f"  - {version}")
             else:
-                console.print("[yellow]No migrations to rollback.[/yellow]")
+                print(f"{YELLOW}No migrations to rollback.{RESET}")
 
         except PgfastError as e:
-            console.print(f"\n[red]ERROR:[/red] {e}")
-            raise typer.Exit(1)
+            print(f"\n{RED}ERROR:{RESET} {e}")
+            sys.exit(1)
         finally:
             await close_pool(pool)
 
     asyncio.run(_run())
 
 
-@migration_app.command("status")
-def migration_status():
+def cmd_schema_status(args: argparse.Namespace) -> None:
     """Show migration status."""
 
     async def _run():
@@ -326,15 +298,13 @@ def migration_status():
             applied = await manager.get_applied_migrations()
             pending = await manager.get_pending_migrations()
 
-            console.print(f"\n[bold]Current Version:[/bold] {current_version}")
-            console.print(f"[bold]Applied Migrations:[/bold] {len(applied)}")
-            console.print(f"[bold]Pending Migrations:[/bold] {len(pending)}")
+            print(f"\n{BOLD}Current Version:{RESET} {current_version}")
+            print(f"{BOLD}Applied Migrations:{RESET} {len(applied)}")
+            print(f"{BOLD}Pending Migrations:{RESET} {len(pending)}")
 
             if applied:
-                console.print("\n[bold]Applied:[/bold]")
-                table = Table(show_header=True, header_style="bold")
-                table.add_column("Version")
-                table.add_column("Name")
+                print(f"\n{BOLD}Applied:{RESET}")
+                rows = []
 
                 for version in applied:
                     # Find migration name
@@ -343,34 +313,30 @@ def migration_status():
                         (m for m in all_migrations if m.version == version), None
                     )
                     name = migration.name if migration else "unknown"
-                    table.add_row(str(version), name)
+                    rows.append([str(version), name])
 
-                console.print(table)
+                print_table(["Version", "Name"], rows)
 
             if pending:
-                console.print("\n[bold]Pending:[/bold]")
-                table = Table(show_header=True, header_style="bold")
-                table.add_column("Version")
-                table.add_column("Name")
-                table.add_column("Status")
+                print(f"\n{BOLD}Pending:{RESET}")
+                rows = []
 
                 for migration in pending:
                     status = "✓ Ready" if migration.is_complete else "✗ Incomplete"
-                    table.add_row(str(migration.version), migration.name, status)
+                    rows.append([str(migration.version), migration.name, status])
 
-                console.print(table)
+                print_table(["Version", "Name", "Status"], rows)
 
         except PgfastError as e:
-            console.print(f"\n[red]ERROR:[/red] {e}")
-            raise typer.Exit(1)
+            print(f"\n{RED}ERROR:{RESET} {e}")
+            sys.exit(1)
         finally:
             await close_pool(pool)
 
     asyncio.run(_run())
 
 
-@migration_app.command("deps")
-def migration_deps():
+def cmd_schema_deps(args: argparse.Namespace) -> None:
     """Show migration dependency graph."""
 
     async def _run():
@@ -388,55 +354,51 @@ def migration_deps():
             applied = set(await manager.get_applied_migrations())
 
             if not all_migrations:
-                console.print("[yellow]No migrations found.[/yellow]")
+                print(f"{YELLOW}No migrations found.{RESET}")
                 return
 
-            console.print("\n[bold]Migration Dependency Graph:[/bold]\n")
+            print(f"\n{BOLD}Migration Dependency Graph:{RESET}\n")
 
             # Create table
-            table = Table(show_header=True, header_style="bold")
-            table.add_column("Version")
-            table.add_column("Name")
-            table.add_column("Status")
-            table.add_column("Dependencies")
-
+            rows = []
             for migration in all_migrations:
-                status = (
-                    "[green]Applied[/green]"
+                status_str = (
+                    f"{GREEN}Applied{RESET}"
                     if migration.version in applied
-                    else "[yellow]Pending[/yellow]"
+                    else f"{YELLOW}Pending{RESET}"
                 )
 
                 deps = dep_graph.get(migration.version, [])
                 deps_str = ", ".join(map(str, deps)) if deps else "-"
 
-                table.add_row(
-                    str(migration.version),
-                    migration.name,
-                    status,
-                    deps_str,
+                rows.append(
+                    [
+                        str(migration.version),
+                        migration.name,
+                        status_str,
+                        deps_str,
+                    ]
                 )
 
-            console.print(table)
+            print_table(["Version", "Name", "Status", "Dependencies"], rows)
 
             # Check for circular dependencies
             cycles = manager._detect_circular_dependencies(all_migrations)
             if cycles:
-                console.print("\n[red]⚠ Circular dependencies detected:[/red]")
+                print(f"\n{RED}⚠ Circular dependencies detected:{RESET}")
                 for v1, v2 in cycles:
-                    console.print(f"  - {v1} <-> {v2}")
+                    print(f"  - {v1} <-> {v2}")
 
         except PgfastError as e:
-            console.print(f"\n[red]ERROR:[/red] {e}")
-            raise typer.Exit(1)
+            print(f"\n{RED}ERROR:{RESET} {e}")
+            sys.exit(1)
         finally:
             await close_pool(pool)
 
     asyncio.run(_run())
 
 
-@migration_app.command("verify")
-def migration_verify():
+def cmd_schema_verify(args: argparse.Namespace) -> None:
     """Verify migration file checksums."""
 
     async def _run():
@@ -449,60 +411,52 @@ def migration_verify():
                 migrations_dir=config.migrations_dir,
             )
 
-            console.print("Verifying migration checksums...\n")
+            print("Verifying migration checksums...\n")
 
             results = await manager.verify_checksums()
 
             if results["valid"]:
-                console.print("[bold]Valid checksums:[/bold]")
+                print(f"{BOLD}Valid checksums:{RESET}")
                 for msg in results["valid"]:
-                    console.print(f"  [green]✓[/green] {msg}")
+                    print(f"  {GREEN}✓{RESET} {msg}")
 
             if results["invalid"]:
-                console.print("\n[bold]Invalid checksums:[/bold]")
+                print(f"\n{BOLD}Invalid checksums:{RESET}")
                 for msg in results["invalid"]:
-                    console.print(f"  [red]✗[/red] {msg}")
+                    print(f"  {RED}✗{RESET} {msg}")
 
-                console.print("\n[red]Checksum validation failed![/red]")
-                console.print(
-                    "Some migration files have been modified after being applied."
-                )
-                console.print("Use --force flag to override validation if needed.")
-                raise typer.Exit(1)
+                print(f"\n{RED}Checksum validation failed!{RESET}")
+                print("Some migration files have been modified after being applied.")
+                print("Use --force flag to override validation if needed.")
+                sys.exit(1)
             else:
                 if results["valid"]:
-                    console.print(
-                        f"\n[green]✓ All {len(results['valid'])} applied migration(s) verified successfully![/green]"
+                    print(
+                        f"\n{GREEN}✓ All {len(results['valid'])} applied migration(s) verified successfully!{RESET}"
                     )
                 else:
-                    console.print("[yellow]No applied migrations to verify.[/yellow]")
+                    print(f"{YELLOW}No applied migrations to verify.{RESET}")
 
         except PgfastError as e:
-            console.print(f"\n[red]ERROR:[/red] {e}")
-            raise typer.Exit(1)
+            print(f"\n{RED}ERROR:{RESET} {e}")
+            sys.exit(1)
         finally:
             await close_pool(pool)
 
     asyncio.run(_run())
 
 
-@test_db_app.command("create")
-def test_db_create(
-    name: Optional[str] = typer.Option(None, "--name", "-n", help="Database name"),
-    template: Optional[str] = typer.Option(
-        None, "--template", "-t", help="Template to clone from"
-    ),
-):
+def cmd_test_db_create(args: argparse.Namespace) -> None:
     """Create a test database."""
 
     async def _run():
         config = get_config()
-        manager = TestDatabaseManager(config, template_db=template)
+        manager = TestDatabaseManager(config, template_db=args.template)
 
-        pool = await manager.create_test_db(db_name=name)
-        db_name = _pool_db_names.get(id(pool), name)
+        pool = await manager.create_test_db(db_name=args.name)
+        db_name = _pool_db_names.get(id(pool), args.name)
 
-        console.print(f"\n[green]✓ Created test database:[/green] {db_name}")
+        print(f"\n{GREEN}✓ Created test database:{RESET} {db_name}")
 
         # Extract base URL for connection string
         parsed = urlparse(config.url)
@@ -516,18 +470,14 @@ def test_db_create(
         if parsed.port:
             base_url += f":{parsed.port}"
 
-        console.print(f"\nConnection URL: {base_url}/{db_name}")
+        print(f"\nConnection URL: {base_url}/{db_name}")
 
         await close_pool(pool)
 
     asyncio.run(_run())
 
 
-@test_db_app.command("load-fixtures")
-def test_db_load_fixtures(
-    database: str = typer.Argument(..., help="Database name"),
-    fixtures: list[str] = typer.Argument(..., help="Fixture files to load"),
-):
+def cmd_test_db_load_fixtures(args: argparse.Namespace) -> None:
     """Load fixtures into test database."""
 
     async def _run():
@@ -535,7 +485,7 @@ def test_db_load_fixtures(
 
         # Connect to specified database
         parsed = urlparse(config.url)
-        test_url = parsed._replace(path=f"/{database}").geturl()
+        test_url = parsed._replace(path=f"/{args.database}").geturl()
         test_config = DatabaseConfig(
             url=test_url,
             min_connections=config.min_connections,
@@ -546,22 +496,21 @@ def test_db_load_fixtures(
 
         try:
             manager = TestDatabaseManager(config)
-            fixture_paths = [Path(f) for f in fixtures]
+            fixture_paths = [Path(f) for f in args.fixtures]
 
             await manager.load_fixtures(pool, fixture_paths)
 
-            console.print(f"\n[green]✓ Loaded {len(fixtures)} fixture(s)[/green]")
+            print(f"\n{GREEN}✓ Loaded {len(args.fixtures)} fixture(s){RESET}")
         except PgfastError as e:
-            console.print(f"[red]ERROR:[/red] {e}")
-            raise typer.Exit(1)
+            print(f"{RED}ERROR:{RESET} {e}")
+            sys.exit(1)
         finally:
             await close_pool(pool)
 
     asyncio.run(_run())
 
 
-@test_db_app.command("list")
-def test_db_list():
+def cmd_test_db_list(args: argparse.Namespace) -> None:
     """List pgfast test databases."""
 
     async def _run():
@@ -586,36 +535,27 @@ def test_db_list():
                 )
 
                 if not rows:
-                    console.print("[yellow]No test databases found.[/yellow]")
+                    print(f"{YELLOW}No test databases found.{RESET}")
                     return
 
-                table = Table(show_header=True, header_style="bold")
-                table.add_column("Database")
-                table.add_column("Size")
-
+                table_rows = []
                 for row in rows:
                     size_mb = row["size"] / (1024 * 1024)
-                    table.add_row(row["datname"], f"{size_mb:.2f} MB")
+                    table_rows.append([row["datname"], f"{size_mb:.2f} MB"])
 
-                console.print(table)
+                print_table(["Database", "Size"], table_rows)
 
             finally:
                 await admin_conn.close()
 
         except Exception as e:
-            console.print(f"[red]ERROR:[/red] {e}")
-            raise typer.Exit(1)
+            print(f"{RED}ERROR:{RESET} {e}")
+            sys.exit(1)
 
     asyncio.run(_run())
 
 
-@test_db_app.command("cleanup")
-def test_db_cleanup(
-    all: bool = typer.Option(False, "--all", "-a", help="Clean up all test databases"),
-    pattern: str = typer.Option(
-        "pgfast_test_%", "--pattern", "-p", help="Pattern to match"
-    ),
-):
+def cmd_test_db_cleanup(args: argparse.Namespace) -> None:
     """Clean up test databases."""
 
     async def _run():
@@ -631,24 +571,23 @@ def test_db_cleanup(
             try:
                 # Find test databases
                 rows = await admin_conn.fetch(
-                    "SELECT datname FROM pg_database WHERE datname LIKE $1", pattern
+                    "SELECT datname FROM pg_database WHERE datname LIKE $1",
+                    args.pattern,
                 )
 
                 if not rows:
-                    console.print(
-                        "[yellow]No test databases found to clean up.[/yellow]"
-                    )
+                    print(f"{YELLOW}No test databases found to clean up.{RESET}")
                     return
 
                 databases = [row["datname"] for row in rows]
 
-                if not all:
-                    console.print(f"Found {len(databases)} test database(s):")
+                if not args.all:
+                    print(f"Found {len(databases)} test database(s):")
                     for db in databases:
-                        console.print(f"  - {db}")
+                        print(f"  - {db}")
 
-                    if not typer.confirm("\nDo you want to delete these databases?"):
-                        console.print("Cancelled.")
+                    if not confirm("\nDo you want to delete these databases?"):
+                        print("Cancelled.")
                         return
 
                 # Drop each database
@@ -668,25 +607,170 @@ def test_db_cleanup(
                         "SELECT format('DROP DATABASE IF EXISTS %I', $1)", db_name
                     )
                     await admin_conn.execute(query)
-                    console.print(f"[green]✓[/green] Dropped {db_name}")
+                    print(f"{GREEN}✓{RESET} Dropped {db_name}")
 
-                console.print(
-                    f"\n[green]Cleaned up {len(databases)} database(s)[/green]"
-                )
+                print(f"\n{GREEN}Cleaned up {len(databases)} database(s){RESET}")
 
             finally:
                 await admin_conn.close()
 
         except Exception as e:
-            console.print(f"[red]ERROR:[/red] {e}")
-            raise typer.Exit(1)
+            print(f"{RED}ERROR:{RESET} {e}")
+            sys.exit(1)
 
     asyncio.run(_run())
 
 
+def create_parser() -> argparse.ArgumentParser:
+    """Create the argument parser for pgfast CLI."""
+    parser = argparse.ArgumentParser(
+        prog="pgfast",
+        description="pgfast - Lightweight asyncpg integration for FastAPI",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True, help="Command")
+
+    # Top-level: pgfast init
+    init_parser = subparsers.add_parser(
+        "init", help="Initialize pgfast directory structure"
+    )
+    init_parser.add_argument(
+        "--migrations-dir",
+        "-m",
+        default="db/migrations",
+        help="Migrations directory path (default: db/migrations)",
+    )
+    init_parser.set_defaults(func=cmd_init)
+
+    # Schema group: pgfast schema [subcommand]
+    schema_parser = subparsers.add_parser("schema", help="Schema management commands")
+    schema_subparsers = schema_parser.add_subparsers(
+        dest="schema_command", required=True, help="Schema command"
+    )
+
+    # schema create
+    create_parser = schema_subparsers.add_parser(
+        "create",
+        help="Create a new migration file pair",
+    )
+    create_parser.add_argument("name", help="Migration name")
+    create_parser.add_argument(
+        "--no-depends",
+        action="store_true",
+        help="Don't auto-depend on latest migration (for parallel development)",
+    )
+    create_parser.set_defaults(func=cmd_schema_create)
+
+    # schema up
+    up_parser = schema_subparsers.add_parser("up", help="Apply pending migrations")
+    up_parser.add_argument(
+        "--target",
+        "-t",
+        type=int,
+        help="Target version to migrate to (default: all pending)",
+    )
+    up_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be applied without executing",
+    )
+    up_parser.add_argument(
+        "--force", action="store_true", help="Skip checksum validation"
+    )
+    up_parser.set_defaults(func=cmd_schema_up)
+
+    # schema down
+    down_parser = schema_subparsers.add_parser("down", help="Rollback migrations")
+    down_parser.add_argument(
+        "--steps",
+        "-s",
+        type=int,
+        default=1,
+        help="Number of migrations to rollback (default: 1)",
+    )
+    down_parser.add_argument(
+        "--target", "-t", type=int, help="Target version to rollback to"
+    )
+    down_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be rolled back without executing",
+    )
+    down_parser.add_argument(
+        "--force", action="store_true", help="Skip checksum validation"
+    )
+    down_parser.set_defaults(func=cmd_schema_down)
+
+    # schema status
+    status_parser = schema_subparsers.add_parser("status", help="Show migration status")
+    status_parser.set_defaults(func=cmd_schema_status)
+
+    # schema deps
+    deps_parser = schema_subparsers.add_parser(
+        "deps", help="Show migration dependency graph"
+    )
+    deps_parser.set_defaults(func=cmd_schema_deps)
+
+    # schema verify
+    verify_parser = schema_subparsers.add_parser(
+        "verify", help="Verify migration file checksums"
+    )
+    verify_parser.set_defaults(func=cmd_schema_verify)
+
+    # Test DB group: pgfast test-db [subcommand]
+    test_db_parser = subparsers.add_parser("test-db", help="Test database commands")
+    test_db_subparsers = test_db_parser.add_subparsers(
+        dest="test_db_command", required=True, help="Test database command"
+    )
+
+    # test-db create
+    test_create_parser = test_db_subparsers.add_parser(
+        "create", help="Create a test database"
+    )
+    test_create_parser.add_argument("--name", "-n", help="Database name")
+    test_create_parser.add_argument("--template", "-t", help="Template to clone from")
+    test_create_parser.set_defaults(func=cmd_test_db_create)
+
+    # test-db load-fixtures
+    load_fixtures_parser = test_db_subparsers.add_parser(
+        "load-fixtures", help="Load fixtures into test database"
+    )
+    load_fixtures_parser.add_argument("database", help="Database name")
+    load_fixtures_parser.add_argument(
+        "fixtures", nargs="+", help="Fixture files to load"
+    )
+    load_fixtures_parser.set_defaults(func=cmd_test_db_load_fixtures)
+
+    # test-db list
+    list_parser = test_db_subparsers.add_parser(
+        "list", help="List pgfast test databases"
+    )
+    list_parser.set_defaults(func=cmd_test_db_list)
+
+    # test-db cleanup
+    cleanup_parser = test_db_subparsers.add_parser(
+        "cleanup", help="Clean up test databases"
+    )
+    cleanup_parser.add_argument(
+        "--all", "-a", action="store_true", help="Clean up all test databases"
+    )
+    cleanup_parser.add_argument(
+        "--pattern",
+        "-p",
+        default="pgfast_test_%",
+        help="Pattern to match (default: pgfast_test_%%)",
+    )
+    cleanup_parser.set_defaults(func=cmd_test_db_cleanup)
+
+    return parser
+
+
 def main():
     """Main entry point for CLI."""
-    app()
+    parser = create_parser()
+    args = parser.parse_args()
+
+    # Call the appropriate command function
+    args.func(args)
 
 
 if __name__ == "__main__":
