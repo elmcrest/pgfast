@@ -142,15 +142,21 @@ def schema_up(
 
             # Show detailed preview in dry-run mode
             if dry_run:
-                console.print(f"[bold]Would apply {len(pending)} migration(s):[/bold]\n")
+                console.print(
+                    f"[bold]Would apply {len(pending)} migration(s):[/bold]\n"
+                )
 
                 for migration in pending:
                     preview = manager.preview_migration(migration, "up")
 
-                    console.print(f"[cyan]Migration {preview['version']}:[/cyan] {preview['name']}")
+                    console.print(
+                        f"[cyan]Migration {preview['version']}:[/cyan] {preview['name']}"
+                    )
 
-                    if preview['dependencies']:
-                        console.print(f"  Dependencies: {', '.join(map(str, preview['dependencies']))}")
+                    if preview["dependencies"]:
+                        console.print(
+                            f"  Dependencies: {', '.join(map(str, preview['dependencies']))}"
+                        )
 
                     console.print(f"  Checksum: {preview['checksum'][:16]}...")
                     console.print(f"  SQL Preview ({preview['total_lines']} lines):")
@@ -236,20 +242,28 @@ def schema_down(
                 all_migrations = manager._discover_migrations()
                 migration_map = {m.version: m for m in all_migrations}
 
-                console.print(f"[bold]Would rollback {len(to_rollback_versions)} migration(s):[/bold]\n")
+                console.print(
+                    f"[bold]Would rollback {len(to_rollback_versions)} migration(s):[/bold]\n"
+                )
 
                 for version in to_rollback_versions:
                     migration = migration_map.get(version)
                     if migration:
                         preview = manager.preview_migration(migration, "down")
 
-                        console.print(f"[cyan]Migration {preview['version']}:[/cyan] {preview['name']}")
+                        console.print(
+                            f"[cyan]Migration {preview['version']}:[/cyan] {preview['name']}"
+                        )
 
-                        if preview['dependencies']:
-                            console.print(f"  Dependencies: {', '.join(map(str, preview['dependencies']))}")
+                        if preview["dependencies"]:
+                            console.print(
+                                f"  Dependencies: {', '.join(map(str, preview['dependencies']))}"
+                            )
 
                         console.print(f"  Checksum: {preview['checksum'][:16]}...")
-                        console.print(f"  SQL Preview ({preview['total_lines']} lines):")
+                        console.print(
+                            f"  SQL Preview ({preview['total_lines']} lines):"
+                        )
                         console.print(f"[dim]{preview['sql_preview']}[/dim]\n")
 
                 return
@@ -371,7 +385,11 @@ def migration_deps():
             table.add_column("Dependencies")
 
             for migration in all_migrations:
-                status = "[green]Applied[/green]" if migration.version in applied else "[yellow]Pending[/yellow]"
+                status = (
+                    "[green]Applied[/green]"
+                    if migration.version in applied
+                    else "[yellow]Pending[/yellow]"
+                )
 
                 deps = dep_graph.get(migration.version, [])
                 deps_str = ", ".join(map(str, deps)) if deps else "-"
@@ -430,12 +448,16 @@ def migration_verify():
                     console.print(f"  [red]✗[/red] {msg}")
 
                 console.print("\n[red]Checksum validation failed![/red]")
-                console.print("Some migration files have been modified after being applied.")
+                console.print(
+                    "Some migration files have been modified after being applied."
+                )
                 console.print("Use --force flag to override validation if needed.")
                 raise typer.Exit(1)
             else:
                 if results["valid"]:
-                    console.print(f"\n[green]✓ All {len(results['valid'])} applied migration(s) verified successfully![/green]")
+                    console.print(
+                        f"\n[green]✓ All {len(results['valid'])} applied migration(s) verified successfully![/green]"
+                    )
                 else:
                     console.print("[yellow]No applied migrations to verify.[/yellow]")
 

@@ -36,6 +36,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 
+[project.urls]
+Homepage = "https://github.com/elmcrest/pgfast"
+Repository = "https://github.com/elmcrest/pgfast"
+Issues = "https://github.com/elmcrest/pgfast/issues"
+
 [project.scripts]
 pgfast = "pgfast.cli:main"
 

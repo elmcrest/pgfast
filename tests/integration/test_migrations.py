@@ -237,13 +237,17 @@ async def test_circular_dependency_detection(manager, tmp_path):
 
     # Create migrations with circular dependencies
     # A depends on B
-    up_a = "-- depends_on: 20250102000000\nCREATE TABLE table_a (id SERIAL PRIMARY KEY);"
+    up_a = (
+        "-- depends_on: 20250102000000\nCREATE TABLE table_a (id SERIAL PRIMARY KEY);"
+    )
     down_a = "DROP TABLE table_a;"
     (migrations_dir / "20250101000000_create_a_up.sql").write_text(up_a)
     (migrations_dir / "20250101000000_create_a_down.sql").write_text(down_a)
 
     # B depends on A (circular!)
-    up_b = "-- depends_on: 20250101000000\nCREATE TABLE table_b (id SERIAL PRIMARY KEY);"
+    up_b = (
+        "-- depends_on: 20250101000000\nCREATE TABLE table_b (id SERIAL PRIMARY KEY);"
+    )
     down_b = "DROP TABLE table_b;"
     (migrations_dir / "20250102000000_create_b_up.sql").write_text(up_b)
     (migrations_dir / "20250102000000_create_b_down.sql").write_text(down_b)
@@ -270,7 +274,9 @@ async def test_dependency_prevents_rollback(manager, tmp_path):
     (migrations_dir / "20250102000000_create_b_up.sql").write_text(up_b)
     (migrations_dir / "20250102000000_create_b_down.sql").write_text(down_b)
 
-    up_c = "-- depends_on: 20250101000000\nCREATE TABLE table_c (id SERIAL PRIMARY KEY);"
+    up_c = (
+        "-- depends_on: 20250101000000\nCREATE TABLE table_c (id SERIAL PRIMARY KEY);"
+    )
     down_c = "DROP TABLE table_c;"
     (migrations_dir / "20250103000000_create_c_up.sql").write_text(up_c)
     (migrations_dir / "20250103000000_create_c_down.sql").write_text(down_c)
@@ -531,12 +537,16 @@ async def test_topological_sort_complex_dependencies(manager, tmp_path):
     (migrations_dir / "20250101000000_a_up.sql").write_text(up_a)
     (migrations_dir / "20250101000000_a_down.sql").write_text(down_a)
 
-    up_b = "-- depends_on: 20250101000000\nCREATE TABLE table_b (id SERIAL PRIMARY KEY);"
+    up_b = (
+        "-- depends_on: 20250101000000\nCREATE TABLE table_b (id SERIAL PRIMARY KEY);"
+    )
     down_b = "DROP TABLE table_b;"
     (migrations_dir / "20250102000000_b_up.sql").write_text(up_b)
     (migrations_dir / "20250102000000_b_down.sql").write_text(down_b)
 
-    up_c = "-- depends_on: 20250101000000\nCREATE TABLE table_c (id SERIAL PRIMARY KEY);"
+    up_c = (
+        "-- depends_on: 20250101000000\nCREATE TABLE table_c (id SERIAL PRIMARY KEY);"
+    )
     down_c = "DROP TABLE table_c;"
     (migrations_dir / "20250103000000_c_up.sql").write_text(up_c)
     (migrations_dir / "20250103000000_c_down.sql").write_text(down_c)

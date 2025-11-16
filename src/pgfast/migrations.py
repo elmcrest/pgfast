@@ -46,13 +46,13 @@ class Migration(BaseModel):
 
             # Find all dependency declarations
             # Pattern: -- depends_on: version1, version2, ...
-            pattern = r'--\s*depends_on:\s*([\d,\s]+)'
+            pattern = r"--\s*depends_on:\s*([\d,\s]+)"
             matches = re.finditer(pattern, content, re.IGNORECASE)
 
             for match in matches:
                 # Extract and parse version numbers
                 versions_str = match.group(1)
-                for version_str in versions_str.split(','):
+                for version_str in versions_str.split(","):
                     version_str = version_str.strip()
                     if version_str:
                         try:

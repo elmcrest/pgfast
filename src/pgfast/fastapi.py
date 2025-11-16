@@ -8,7 +8,7 @@ import asyncpg
 from fastapi import FastAPI, Request
 
 from pgfast.config import DatabaseConfig
-from pgfast.connection import create_pool, close_pool
+from pgfast.connection import close_pool, create_pool
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ def create_lifespan(config: DatabaseConfig):
     Returns:
         An async context manager function for FastAPI lifespan
     """
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         """Manage database connection pool lifecycle."""

@@ -6,7 +6,12 @@ from pathlib import Path
 
 import asyncpg
 
-from pgfast.exceptions import ChecksumError, DependencyError, MigrationError, SchemaError
+from pgfast.exceptions import (
+    ChecksumError,
+    DependencyError,
+    MigrationError,
+    SchemaError,
+)
 from pgfast.migrations import Migration
 
 logger = logging.getLogger(__name__)
@@ -439,7 +444,9 @@ class SchemaManager:
         if dry_run:
             logger.info("DRY RUN: No changes will be made")
             for migration in pending:
-                logger.info(f"Would apply migration {migration.version}: {migration.name}")
+                logger.info(
+                    f"Would apply migration {migration.version}: {migration.name}"
+                )
             return [m.version for m in pending]
 
         # Apply migrations

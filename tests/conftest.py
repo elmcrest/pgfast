@@ -6,14 +6,16 @@ from pgfast import DatabaseConfig, SchemaManager
 
 # Import all standard fixtures from pgfast.pytest
 from pgfast.pytest import (
-    db_config as base_db_config,
-    db_pool_factory,
-    db_with_fixtures,
-    fixtures_dir,
-    isolated_db,
-    isolated_db_no_template,
-    migrations_dir,
-    template_db,
+    db_config as base_db_config,  # noqa: F401
+)
+from pgfast.pytest import (
+    db_pool_factory,  # noqa: F401
+    db_with_fixtures,  # noqa: F401
+    fixtures_dir,  # noqa: F401
+    isolated_db,  # noqa: F401
+    isolated_db_no_template,  # noqa: F401
+    migrations_dir,  # noqa: F401
+    template_db,  # noqa: F401
 )
 
 
@@ -33,28 +35,15 @@ def db_config():
 
 
 @pytest.fixture
-async def manager(isolated_db, tmp_path):
+async def manager(isolated_db, tmp_path):  # noqa: F811
     """Create SchemaManager with temporary directories.
 
     Uses isolated_db fixture which provides a clean test database.
     """
-    migrations_dir = tmp_path / "migrations"
+    migrations_dir = tmp_path / "migrations"  # noqa: F811
     migrations_dir.mkdir()
 
     return SchemaManager(
         pool=isolated_db,
         migrations_dir=str(migrations_dir),
     )
-
-
-# For backwards compatibility, alias isolated_db as db_pool
-@pytest.fixture
-async def db_pool(isolated_db):
-    """Provide a clean database pool.
-
-    This is an alias for isolated_db for backwards compatibility
-    with existing tests.
-    """
-    return isolated_db
-
-
