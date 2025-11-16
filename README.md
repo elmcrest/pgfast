@@ -174,8 +174,11 @@ from pgfast.pytest import *
 Run tests:
 ```bash
 export TEST_DATABASE_URL="postgresql://localhost/postgres"
-pytest
+pytest              # Run tests sequentially
+pytest -n auto      # Run tests in parallel (recommended)
 ```
+
+The test infrastructure supports parallel execution out of the box. Each test gets an isolated database, so tests can run concurrently without conflicts.
 
 ## Configuration
 
@@ -209,7 +212,8 @@ Or use environment variables:
 
 ```bash
 # Run tests
-pytest
+pytest              # Sequential
+pytest -n auto      # Parallel (faster)
 
 # Run with coverage
 pytest --cov=src/pgfast
@@ -217,6 +221,7 @@ pytest --cov=src/pgfast
 # Run integration tests
 export TEST_DATABASE_URL="postgresql://localhost/postgres"
 pytest tests/integration/
+pytest -n auto tests/integration/  # Parallel
 ```
 
 ## License

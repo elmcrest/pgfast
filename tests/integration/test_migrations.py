@@ -36,14 +36,14 @@ async def test_create_migration(manager):
     assert "_down.sql" in down_file.name
     assert "add_users_table" in up_file.name
 
-    # Check content includes new features
+    # Check content
     up_content = up_file.read_text()
     assert "Migration:" in up_content
     assert "add_users_table" in up_content
-    assert "depends_on:" in up_content  # Dependency template
 
     down_content = down_file.read_text()
-    assert "depends_on:" in down_content  # Dependency template in down file too
+    assert "Migration:" in down_content
+    assert "rollback" in down_content
 
 
 async def test_discover_migrations(manager, tmp_path):
@@ -571,3 +571,38 @@ async def test_topological_sort_complex_dependencies(manager, tmp_path):
             "SELECT COUNT(*) FROM pg_tables WHERE tablename LIKE 'table_%'"
         )
         assert result == 4
+
+
+async def test_auto_dependency_creation(manager, tmp_path):
+    """Test that new migrations automatically depend on the latest existing migration."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create first migration (should have no dependencies)
+    up1, down1 = manager.create_migration("first_migration")
+    content1 = up1.read_text()
+
+    assert "depends_on:" not in content1
+
+    # Create second migration (should auto-depend on first)
+    up2, down2 = manager.create_migration("second_migration")
+    content2 = up2.read_text()
+
+    assert "depends_on:" in content2
+    # Extract first migration's version from filename
+    first_version = up1.stem.split("_")[0]
+    assert first_version in content2
+
+    # Create third migration with auto_depend=False (should have no dependencies)
+    up3, down3 = manager.create_migration("third_migration", auto_depend=False)
+    content3 = up3.read_text()
+
+    assert "depends_on:" not in content3
+
+    # Create fourth migration (should auto-depend on third, the latest)
+    up4, down4 = manager.create_migration("fourth_migration")
+    content4 = up4.read_text()
+
+    assert "depends_on:" in content4
+    # Should depend on third migration (the latest)
+    third_version = up3.stem.split("_")[0]
+    assert third_version in content4

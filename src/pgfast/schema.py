@@ -620,11 +620,16 @@ class SchemaManager:
 
         return rolled_back
 
-    def create_migration(self, name: str) -> tuple[Path, Path]:
+    def create_migration(self, name: str, auto_depend: bool = True) -> tuple[Path, Path]:
         """Create a new migration file pair (up and down).
+
+        By default, new migrations automatically depend on the latest existing migration.
+        This ensures migrations are applied in the correct order while still allowing
+        flexibility for parallel development (disable with auto_depend=False).
 
         Args:
             name: Human-readable migration name (e.g., "add_users_table")
+            auto_depend: If True (default), automatically depend on the latest migration
 
         Returns:
             Tuple of (up_file_path, down_file_path)
@@ -634,6 +639,16 @@ class SchemaManager:
         """
         if not self.migrations_dir.exists():
             self.migrations_dir.mkdir(parents=True, exist_ok=True)
+
+        # Get existing migrations to determine dependencies
+        existing_migrations = self._discover_migrations()
+
+        # Determine dependency comment
+        dependency_comment = ""
+        if auto_depend and existing_migrations:
+            # Get the latest migration version
+            latest = max(existing_migrations, key=lambda m: m.version)
+            dependency_comment = f"-- depends_on: {latest.version}\n"
 
         # Generate timestamp version
         version = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -650,18 +665,12 @@ class SchemaManager:
         up_template = f"""-- Migration: {name}
 -- Created: {datetime.now().isoformat()}
 --
--- Dependencies (optional): List migration versions this depends on
--- Example: -- depends_on: 20240101000000, 20240102000000
---
--- Add your UP migration SQL here
+{dependency_comment}-- Add your UP migration SQL here
 
 """
 
         down_template = f"""-- Migration: {name} (rollback)
 -- Created: {datetime.now().isoformat()}
---
--- Dependencies (optional): List migration versions this depends on
--- Example: -- depends_on: 20240101000000, 20240102000000
 --
 -- Add your DOWN migration SQL here (should reverse the UP migration)
 

@@ -14,9 +14,19 @@ from pgfast.pytest import (
     fixtures_dir,  # noqa: F401
     isolated_db,  # noqa: F401
     isolated_db_no_template,  # noqa: F401
-    migrations_dir,  # noqa: F401
     template_db,  # noqa: F401
 )
+
+
+@pytest.fixture(scope="session")
+def migrations_dir(tmp_path_factory):
+    """Create empty migrations directory for tests.
+
+    Override the default fixture to prevent template_db from using
+    the project's real migrations directory.
+    """
+    migrations = tmp_path_factory.mktemp("migrations")
+    return str(migrations)
 
 
 @pytest.fixture(scope="session")

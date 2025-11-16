@@ -73,8 +73,17 @@ def init(
 @migration_app.command("create")
 def create_migration(
     name: str = typer.Argument(..., help="Migration name"),
+    no_depends: bool = typer.Option(
+        False,
+        "--no-depends",
+        help="Don't auto-depend on latest migration (for parallel development)",
+    ),
 ):
-    """Create a new migration file pair."""
+    """Create a new migration file pair.
+
+    By default, new migrations automatically depend on the latest existing migration.
+    Use --no-depends to create an independent migration for parallel development.
+    """
     try:
         config = get_config()
 
@@ -84,11 +93,18 @@ def create_migration(
             migrations_dir=config.migrations_dir,
         )
 
-        up_file, down_file = manager.create_migration(name)
+        up_file, down_file = manager.create_migration(name, auto_depend=not no_depends)
 
         console.print("\n[green]✓ Created migration files:[/green]")
         console.print(f"  UP:   {up_file}")
         console.print(f"  DOWN: {down_file}")
+
+        if not no_depends:
+            # Check if dependency was added
+            content = up_file.read_text()
+            if "depends_on:" in content:
+                console.print("\n[dim]Auto-dependency added to latest migration[/dim]")
+
         console.print("\nEdit these files to add your migration SQL.")
 
     except PgfastError as e:
