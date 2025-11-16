@@ -575,7 +575,6 @@ async def test_topological_sort_complex_dependencies(manager, tmp_path):
 
 async def test_auto_dependency_creation(manager, tmp_path):
     """Test that new migrations automatically depend on the latest existing migration."""
-    migrations_dir = tmp_path / "migrations"
 
     # Create first migration (should have no dependencies)
     up1, down1 = manager.create_migration("first_migration")
