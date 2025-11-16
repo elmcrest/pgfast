@@ -620,7 +620,9 @@ class SchemaManager:
 
         return rolled_back
 
-    def create_migration(self, name: str, auto_depend: bool = True) -> tuple[Path, Path]:
+    def create_migration(
+        self, name: str, auto_depend: bool = True
+    ) -> tuple[Path, Path]:
         """Create a new migration file pair (up and down).
 
         By default, new migrations automatically depend on the latest existing migration.
@@ -666,14 +668,12 @@ class SchemaManager:
 -- Created: {datetime.now().isoformat()}
 --
 {dependency_comment}-- Add your UP migration SQL here
-
 """
 
         down_template = f"""-- Migration: {name} (rollback)
 -- Created: {datetime.now().isoformat()}
 --
 -- Add your DOWN migration SQL here (should reverse the UP migration)
-
 """
 
         up_file.write_text(up_template)
