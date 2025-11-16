@@ -26,3 +26,9 @@ class MigrationError(PgfastError):
     """Raised when migration operations fail."""
 
     ...
+
+
+class TestDatabaseError(PgfastError):
+    """Raised when test database operations fail."""
+
+    ...

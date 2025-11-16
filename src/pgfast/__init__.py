@@ -12,9 +12,15 @@ from pgfast.exceptions import (
     MigrationError,
     PgfastError,
     SchemaError,
+    TestDatabaseError,
 )
 from pgfast.fastapi import create_lifespan, get_db_pool
 from pgfast.schema import SchemaManager
+from pgfast.testing import (
+    TestDatabaseManager,
+    cleanup_test_pool,
+    create_test_pool_with_schema,
+)
 
 __all__ = [
     "DatabaseConfig",
@@ -25,7 +31,11 @@ __all__ = [
     "MigrationError",
     "SchemaError",
     "PgfastError",
+    "TestDatabaseError",
     "create_lifespan",
     "get_db_pool",
     "SchemaManager",
+    "TestDatabaseManager",
+    "create_test_pool_with_schema",
+    "cleanup_test_pool",
 ]

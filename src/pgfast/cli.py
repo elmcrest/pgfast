@@ -3,7 +3,9 @@
 import asyncio
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
+import asyncpg
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -12,6 +14,7 @@ from pgfast.config import DatabaseConfig
 from pgfast.connection import close_pool, create_pool
 from pgfast.exceptions import PgfastError
 from pgfast.schema import SchemaManager
+from pgfast.testing import TestDatabaseManager, _pool_db_names
 
 app = typer.Typer(
     name="pgfast",
@@ -20,7 +23,10 @@ app = typer.Typer(
 )
 
 migration_app = typer.Typer(help="Migration commands")
-app.add_typer(migration_app, name="migrate")
+app.add_typer(migration_app, name="schema")
+
+test_db_app = typer.Typer(help="Test database commands")
+app.add_typer(test_db_app, name="test-db")
 
 console = Console()
 
@@ -60,8 +66,8 @@ def init(
     console.print("\n[green]Initialization complete![/green]")
     console.print("\nNext steps:")
     console.print("  1. Set DATABASE_URL environment variable")
-    console.print("  2. Run 'pgfast migrate create' to create your first migration")
-    console.print("  3. Edit migration files and run 'pgfast migrate up'")
+    console.print("  2. Run 'pgfast schema create' to create your first migration")
+    console.print("  3. Edit migration files and run 'pgfast schema up'")
 
 
 @migration_app.command("create")
@@ -91,12 +97,12 @@ def create_migration(
 
 
 @migration_app.command("up")
-def migrate_up(
+def schema_up(
     target: Optional[int] = typer.Option(
         None,
         "--target",
         "-t",
-        help="Target version to migrate to (default: all pending)",
+        help="Target version to schema to (default: all pending)",
     ),
 ):
     """Apply pending migrations."""
@@ -112,7 +118,7 @@ def migrate_up(
             )
 
             console.print("Checking for pending migrations...")
-            applied = await manager.migrate_up(target=target)
+            applied = await manager.schema_up(target=target)
 
             if applied:
                 console.print(
@@ -133,12 +139,12 @@ def migrate_up(
 
 
 @migration_app.command("down")
-def migrate_down(
+def schema_down(
     steps: int = typer.Option(
         1, "--steps", "-s", help="Number of migrations to rollback"
     ),
     target: Optional[int] = typer.Option(
-        None, "--target", "-t", help="Target version to migrate down to"
+        None, "--target", "-t", help="Target version to schema down to"
     ),
 ):
     """Rollback migrations."""
@@ -154,7 +160,7 @@ def migrate_down(
             )
 
             console.print("Rolling back migrations...")
-            rolled_back = await manager.migrate_down(target=target, steps=steps)
+            rolled_back = await manager.schema_down(target=target, steps=steps)
 
             if rolled_back:
                 console.print(
@@ -231,6 +237,201 @@ def migration_status():
             raise typer.Exit(1)
         finally:
             await close_pool(pool)
+
+    asyncio.run(_run())
+
+
+@test_db_app.command("create")
+def test_db_create(
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Database name"),
+    template: Optional[str] = typer.Option(
+        None, "--template", "-t", help="Template to clone from"
+    ),
+):
+    """Create a test database."""
+
+    async def _run():
+        config = get_config()
+        manager = TestDatabaseManager(config, template_db=template)
+
+        pool = await manager.create_test_db(db_name=name)
+        db_name = _pool_db_names.get(id(pool), name)
+
+        console.print(f"\n[green]✓ Created test database:[/green] {db_name}")
+
+        # Extract base URL for connection string
+        parsed = urlparse(config.url)
+        base_url = f"{parsed.scheme}://"
+        if parsed.username:
+            base_url += parsed.username
+            if parsed.password:
+                base_url += f":{parsed.password}"
+            base_url += "@"
+        base_url += f"{parsed.hostname or 'localhost'}"
+        if parsed.port:
+            base_url += f":{parsed.port}"
+
+        console.print(f"\nConnection URL: {base_url}/{db_name}")
+
+        await close_pool(pool)
+
+    asyncio.run(_run())
+
+
+@test_db_app.command("load-fixtures")
+def test_db_load_fixtures(
+    database: str = typer.Argument(..., help="Database name"),
+    fixtures: list[str] = typer.Argument(..., help="Fixture files to load"),
+):
+    """Load fixtures into test database."""
+
+    async def _run():
+        config = get_config()
+
+        # Connect to specified database
+        parsed = urlparse(config.url)
+        test_url = parsed._replace(path=f"/{database}").geturl()
+        test_config = DatabaseConfig(
+            url=test_url,
+            min_connections=config.min_connections,
+            max_connections=config.max_connections,
+        )
+
+        pool = await create_pool(test_config)
+
+        try:
+            manager = TestDatabaseManager(config)
+            fixture_paths = [Path(f) for f in fixtures]
+
+            await manager.load_fixtures(pool, fixture_paths)
+
+            console.print(f"\n[green]✓ Loaded {len(fixtures)} fixture(s)[/green]")
+        except PgfastError as e:
+            console.print(f"[red]ERROR:[/red] {e}")
+            raise typer.Exit(1)
+        finally:
+            await close_pool(pool)
+
+    asyncio.run(_run())
+
+
+@test_db_app.command("list")
+def test_db_list():
+    """List pgfast test databases."""
+
+    async def _run():
+        config = get_config()
+
+        # Connect to postgres database
+        parsed = urlparse(config.url)
+        admin_url = parsed._replace(path="/postgres").geturl()
+
+        try:
+            admin_conn = await asyncpg.connect(admin_url, timeout=config.timeout)
+
+            try:
+                # Query for test databases
+                rows = await admin_conn.fetch(
+                    """
+                    SELECT datname, pg_database_size(datname) as size
+                    FROM pg_database
+                    WHERE datname LIKE 'pgfast_test_%' OR datname LIKE 'pgfast_template_%'
+                    ORDER BY datname
+                    """
+                )
+
+                if not rows:
+                    console.print("[yellow]No test databases found.[/yellow]")
+                    return
+
+                table = Table(show_header=True, header_style="bold")
+                table.add_column("Database")
+                table.add_column("Size")
+
+                for row in rows:
+                    size_mb = row["size"] / (1024 * 1024)
+                    table.add_row(row["datname"], f"{size_mb:.2f} MB")
+
+                console.print(table)
+
+            finally:
+                await admin_conn.close()
+
+        except Exception as e:
+            console.print(f"[red]ERROR:[/red] {e}")
+            raise typer.Exit(1)
+
+    asyncio.run(_run())
+
+
+@test_db_app.command("cleanup")
+def test_db_cleanup(
+    all: bool = typer.Option(False, "--all", "-a", help="Clean up all test databases"),
+    pattern: str = typer.Option(
+        "pgfast_test_%", "--pattern", "-p", help="Pattern to match"
+    ),
+):
+    """Clean up test databases."""
+
+    async def _run():
+        config = get_config()
+
+        # Connect to postgres database
+        parsed = urlparse(config.url)
+        admin_url = parsed._replace(path="/postgres").geturl()
+
+        try:
+            admin_conn = await asyncpg.connect(admin_url, timeout=config.timeout)
+
+            try:
+                # Find test databases
+                rows = await admin_conn.fetch(
+                    "SELECT datname FROM pg_database WHERE datname LIKE $1", pattern
+                )
+
+                if not rows:
+                    console.print(
+                        "[yellow]No test databases found to clean up.[/yellow]"
+                    )
+                    return
+
+                databases = [row["datname"] for row in rows]
+
+                if not all:
+                    console.print(f"Found {len(databases)} test database(s):")
+                    for db in databases:
+                        console.print(f"  - {db}")
+
+                    if not typer.confirm("\nDo you want to delete these databases?"):
+                        console.print("Cancelled.")
+                        return
+
+                # Drop each database
+                for db_name in databases:
+                    # Terminate connections
+                    await admin_conn.execute(
+                        """
+                        SELECT pg_terminate_backend(pid)
+                        FROM pg_stat_activity
+                        WHERE datname = $1 AND pid <> pg_backend_pid()
+                        """,
+                        db_name,
+                    )
+
+                    # Drop database
+                    await admin_conn.execute(f'DROP DATABASE IF EXISTS "{db_name}"')
+                    console.print(f"[green]✓[/green] Dropped {db_name}")
+
+                console.print(
+                    f"\n[green]Cleaned up {len(databases)} database(s)[/green]"
+                )
+
+            finally:
+                await admin_conn.close()
+
+        except Exception as e:
+            console.print(f"[red]ERROR:[/red] {e}")
+            raise typer.Exit(1)
 
     asyncio.run(_run())
 

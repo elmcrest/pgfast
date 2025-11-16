@@ -120,11 +120,11 @@ class SchemaManager:
 
         return [m for m in all_migrations if m.version not in applied_set]
 
-    async def migrate_up(self, target: int | None = None) -> list[int]:
+    async def schema_up(self, target: int | None = None) -> list[int]:
         """Apply pending migrations up to target version.
 
         Args:
-            target: Target version to migrate to (None = apply all pending)
+            target: Target version to schema to (None = apply all pending)
 
         Returns:
             List of migration versions that were applied
@@ -184,13 +184,11 @@ class SchemaManager:
 
         return applied
 
-    async def migrate_down(
-        self, target: int | None = None, steps: int = 1
-    ) -> list[int]:
+    async def schema_down(self, target: int | None = None, steps: int = 1) -> list[int]:
         """Rollback migrations down to target version or by N steps.
 
         Args:
-            target: Target version to migrate down to (None = rollback by steps)
+            target: Target version to schema down to (None = rollback by steps)
             steps: Number of migrations to rollback (default: 1, ignored if target set)
 
         Returns:

@@ -51,7 +51,7 @@ async def test_discover_migrations(manager, tmp_path):
     assert migrations[1].name == "second"
 
 
-async def test_migrate_up(manager, tmp_path):
+async def test_schema_up(manager, tmp_path):
     """Test applying migrations."""
     migrations_dir = tmp_path / "migrations"
 
@@ -63,7 +63,7 @@ async def test_migrate_up(manager, tmp_path):
     (migrations_dir / "20250101000000_create_test_users_down.sql").write_text(down_sql)
 
     # Apply migration
-    applied = await manager.migrate_up()
+    applied = await manager.schema_up()
 
     assert applied == [20250101000000]
 
@@ -79,7 +79,7 @@ async def test_migrate_up(manager, tmp_path):
     assert current_version == 20250101000000
 
 
-async def test_migrate_down(manager, tmp_path):
+async def test_schema_down(manager, tmp_path):
     """Test rolling back migrations."""
     migrations_dir = tmp_path / "migrations"
 
@@ -90,7 +90,7 @@ async def test_migrate_down(manager, tmp_path):
     (migrations_dir / "20250101000000_create_posts_up.sql").write_text(up_sql)
     (migrations_dir / "20250101000000_create_posts_down.sql").write_text(down_sql)
 
-    await manager.migrate_up()
+    await manager.schema_up()
 
     # Verify table exists
     async with manager.pool.acquire() as conn:
@@ -100,7 +100,7 @@ async def test_migrate_down(manager, tmp_path):
         assert result == 1
 
     # Rollback
-    rolled_back = await manager.migrate_down()
+    rolled_back = await manager.schema_down()
 
     assert rolled_back == [20250101000000]
 
@@ -131,7 +131,7 @@ async def test_pending_migrations(manager, tmp_path):
     assert len(pending) == 2
 
     # Apply first
-    await manager.migrate_up(target=20250101000000)
+    await manager.schema_up(target=20250101000000)
 
     # Now only second is pending
     pending = await manager.get_pending_migrations()
@@ -150,7 +150,7 @@ async def test_migration_error_handling(manager, tmp_path):
 
     # Should raise MigrationError
     with pytest.raises(MigrationError):
-        await manager.migrate_up()
+        await manager.schema_up()
 
     # Verify nothing was recorded
     current_version = await manager.get_current_version()
