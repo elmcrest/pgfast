@@ -87,14 +87,14 @@ class TestDatabaseManager:
                 logger.info(f"Creating from template: {self.template_db}")
                 # Use format() with %I for safe identifier escaping
                 query = await admin_conn.fetchval(
-                    "SELECT format('CREATE DATABASE %I TEMPLATE %I', $1, $2)",
+                    "SELECT format('CREATE DATABASE %I TEMPLATE %I', $1::text, $2::text)",
                     db_name,
                     self.template_db,
                 )
                 await admin_conn.execute(query)
             else:
                 query = await admin_conn.fetchval(
-                    "SELECT format('CREATE DATABASE %I', $1)", db_name
+                    "SELECT format('CREATE DATABASE %I', $1::text)", db_name
                 )
                 await admin_conn.execute(query)
 
@@ -174,7 +174,7 @@ class TestDatabaseManager:
 
             # Drop the database
             query = await admin_conn.fetchval(
-                "SELECT format('DROP DATABASE IF EXISTS %I', $1)", db_name
+                "SELECT format('DROP DATABASE IF EXISTS %I', $1::text)", db_name
             )
             await admin_conn.execute(query)
 
@@ -296,7 +296,7 @@ class TestDatabaseManager:
 
             # Drop the database
             query = await admin_conn.fetchval(
-                "SELECT format('DROP DATABASE IF EXISTS %I', $1)", template_name
+                "SELECT format('DROP DATABASE IF EXISTS %I', $1::text)", template_name
             )
             await admin_conn.execute(query)
 

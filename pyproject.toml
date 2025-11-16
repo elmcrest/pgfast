@@ -1,7 +1,7 @@
 [project]
 name = "pgfast"
 version = "0.1.0"
-description = "Add your description here"
+description = "Lightweight PostgreSQL migration and testing toolkit for FastAPI with raw SQL, dependency management, and isolated test databases"
 readme = "README.md"
 authors = [
     { name = "Marius Räsener", email = "931919+elmcrest@users.noreply.github.com" },
@@ -14,6 +14,26 @@ dependencies = [
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.0.0",
     "typer>=0.20.0",
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Database",
+    "Topic :: Database :: Database Engines/Servers",
+    "Framework :: AsyncIO",
+    "Framework :: FastAPI",
+    "Framework :: Pytest",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: SQL",
+    "License :: OSI Approved :: MIT License",                       # adjust based on your actual license
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
+    "Natural Language :: English",
+    "Environment :: Console",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Libraries",
 ]
 
 [project.scripts]

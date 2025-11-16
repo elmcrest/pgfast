@@ -102,7 +102,17 @@ def schema_up(
         None,
         "--target",
         "-t",
-        help="Target version to schema to (default: all pending)",
+        help="Target version to migrate to (default: all pending)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show what would be applied without executing",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Skip checksum validation",
     ),
 ):
     """Apply pending migrations."""
@@ -117,8 +127,40 @@ def schema_up(
                 migrations_dir=config.migrations_dir,
             )
 
+            if dry_run:
+                console.print("[bold]DRY RUN MODE - No changes will be made[/bold]\n")
+
+            # Get pending migrations to show preview
+            pending = await manager.get_pending_migrations()
+
+            if target is not None:
+                pending = [m for m in pending if m.version <= target]
+
+            if not pending:
+                console.print("[yellow]No pending migrations to apply.[/yellow]")
+                return
+
+            # Show detailed preview in dry-run mode
+            if dry_run:
+                console.print(f"[bold]Would apply {len(pending)} migration(s):[/bold]\n")
+
+                for migration in pending:
+                    preview = manager.preview_migration(migration, "up")
+
+                    console.print(f"[cyan]Migration {preview['version']}:[/cyan] {preview['name']}")
+
+                    if preview['dependencies']:
+                        console.print(f"  Dependencies: {', '.join(map(str, preview['dependencies']))}")
+
+                    console.print(f"  Checksum: {preview['checksum'][:16]}...")
+                    console.print(f"  SQL Preview ({preview['total_lines']} lines):")
+                    console.print(f"[dim]{preview['sql_preview']}[/dim]\n")
+
+                return
+
+            # Apply migrations
             console.print("Checking for pending migrations...")
-            applied = await manager.schema_up(target=target)
+            applied = await manager.schema_up(target=target, dry_run=False, force=force)
 
             if applied:
                 console.print(
@@ -144,7 +186,17 @@ def schema_down(
         1, "--steps", "-s", help="Number of migrations to rollback"
     ),
     target: Optional[int] = typer.Option(
-        None, "--target", "-t", help="Target version to schema down to"
+        None, "--target", "-t", help="Target version to rollback to"
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show what would be rolled back without executing",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Skip checksum validation",
     ),
 ):
     """Rollback migrations."""
@@ -159,8 +211,54 @@ def schema_down(
                 migrations_dir=config.migrations_dir,
             )
 
+            if dry_run:
+                console.print("[bold]DRY RUN MODE - No changes will be made[/bold]\n")
+
+            # Get applied migrations to determine what would be rolled back
+            applied = await manager.get_applied_migrations()
+
+            if not applied:
+                console.print("[yellow]No migrations to rollback.[/yellow]")
+                return
+
+            # Determine which migrations would be rolled back
+            if target is not None:
+                to_rollback_versions = [v for v in reversed(applied) if v > target]
+            else:
+                to_rollback_versions = list(reversed(applied[-steps:]))
+
+            if not to_rollback_versions:
+                console.print("[yellow]No migrations to rollback.[/yellow]")
+                return
+
+            # Show detailed preview in dry-run mode
+            if dry_run:
+                all_migrations = manager._discover_migrations()
+                migration_map = {m.version: m for m in all_migrations}
+
+                console.print(f"[bold]Would rollback {len(to_rollback_versions)} migration(s):[/bold]\n")
+
+                for version in to_rollback_versions:
+                    migration = migration_map.get(version)
+                    if migration:
+                        preview = manager.preview_migration(migration, "down")
+
+                        console.print(f"[cyan]Migration {preview['version']}:[/cyan] {preview['name']}")
+
+                        if preview['dependencies']:
+                            console.print(f"  Dependencies: {', '.join(map(str, preview['dependencies']))}")
+
+                        console.print(f"  Checksum: {preview['checksum'][:16]}...")
+                        console.print(f"  SQL Preview ({preview['total_lines']} lines):")
+                        console.print(f"[dim]{preview['sql_preview']}[/dim]\n")
+
+                return
+
+            # Rollback migrations
             console.print("Rolling back migrations...")
-            rolled_back = await manager.schema_down(target=target, steps=steps)
+            rolled_back = await manager.schema_down(
+                target=target, steps=steps, dry_run=False, force=force
+            )
 
             if rolled_back:
                 console.print(
@@ -231,6 +329,115 @@ def migration_status():
                     table.add_row(str(migration.version), migration.name, status)
 
                 console.print(table)
+
+        except PgfastError as e:
+            console.print(f"\n[red]ERROR:[/red] {e}")
+            raise typer.Exit(1)
+        finally:
+            await close_pool(pool)
+
+    asyncio.run(_run())
+
+
+@migration_app.command("deps")
+def migration_deps():
+    """Show migration dependency graph."""
+
+    async def _run():
+        config = get_config()
+        pool = await create_pool(config)
+
+        try:
+            manager = SchemaManager(
+                pool=pool,
+                migrations_dir=config.migrations_dir,
+            )
+
+            dep_graph = manager.get_dependency_graph()
+            all_migrations = manager._discover_migrations()
+            applied = set(await manager.get_applied_migrations())
+
+            if not all_migrations:
+                console.print("[yellow]No migrations found.[/yellow]")
+                return
+
+            console.print("\n[bold]Migration Dependency Graph:[/bold]\n")
+
+            # Create table
+            table = Table(show_header=True, header_style="bold")
+            table.add_column("Version")
+            table.add_column("Name")
+            table.add_column("Status")
+            table.add_column("Dependencies")
+
+            for migration in all_migrations:
+                status = "[green]Applied[/green]" if migration.version in applied else "[yellow]Pending[/yellow]"
+
+                deps = dep_graph.get(migration.version, [])
+                deps_str = ", ".join(map(str, deps)) if deps else "-"
+
+                table.add_row(
+                    str(migration.version),
+                    migration.name,
+                    status,
+                    deps_str,
+                )
+
+            console.print(table)
+
+            # Check for circular dependencies
+            cycles = manager._detect_circular_dependencies(all_migrations)
+            if cycles:
+                console.print("\n[red]⚠ Circular dependencies detected:[/red]")
+                for v1, v2 in cycles:
+                    console.print(f"  - {v1} <-> {v2}")
+
+        except PgfastError as e:
+            console.print(f"\n[red]ERROR:[/red] {e}")
+            raise typer.Exit(1)
+        finally:
+            await close_pool(pool)
+
+    asyncio.run(_run())
+
+
+@migration_app.command("verify")
+def migration_verify():
+    """Verify migration file checksums."""
+
+    async def _run():
+        config = get_config()
+        pool = await create_pool(config)
+
+        try:
+            manager = SchemaManager(
+                pool=pool,
+                migrations_dir=config.migrations_dir,
+            )
+
+            console.print("Verifying migration checksums...\n")
+
+            results = await manager.verify_checksums()
+
+            if results["valid"]:
+                console.print("[bold]Valid checksums:[/bold]")
+                for msg in results["valid"]:
+                    console.print(f"  [green]✓[/green] {msg}")
+
+            if results["invalid"]:
+                console.print("\n[bold]Invalid checksums:[/bold]")
+                for msg in results["invalid"]:
+                    console.print(f"  [red]✗[/red] {msg}")
+
+                console.print("\n[red]Checksum validation failed![/red]")
+                console.print("Some migration files have been modified after being applied.")
+                console.print("Use --force flag to override validation if needed.")
+                raise typer.Exit(1)
+            else:
+                if results["valid"]:
+                    console.print(f"\n[green]✓ All {len(results['valid'])} applied migration(s) verified successfully![/green]")
+                else:
+                    console.print("[yellow]No applied migrations to verify.[/yellow]")
 
         except PgfastError as e:
             console.print(f"\n[red]ERROR:[/red] {e}")

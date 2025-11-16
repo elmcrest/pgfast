@@ -2,7 +2,7 @@
 
 import pytest
 
-from pgfast.exceptions import MigrationError
+from pgfast.exceptions import ChecksumError, DependencyError, MigrationError
 
 
 async def test_ensure_migrations_table(manager):
@@ -10,8 +10,18 @@ async def test_ensure_migrations_table(manager):
     await manager._ensure_migrations_table()
 
     async with manager.pool.acquire() as conn:
+        # Check table exists
         result = await conn.fetchval(
             "SELECT COUNT(*) FROM pg_tables WHERE tablename = '_pgfast_migrations'"
+        )
+        assert result == 1
+
+        # Verify schema includes checksum column
+        result = await conn.fetchval(
+            """
+            SELECT COUNT(*) FROM information_schema.columns
+            WHERE table_name = '_pgfast_migrations' AND column_name = 'checksum'
+            """
         )
         assert result == 1
 
@@ -26,10 +36,14 @@ async def test_create_migration(manager):
     assert "_down.sql" in down_file.name
     assert "add_users_table" in up_file.name
 
-    # Check content
-    content = up_file.read_text()
-    assert "Migration:" in content
-    assert "add_users_table" in content
+    # Check content includes new features
+    up_content = up_file.read_text()
+    assert "Migration:" in up_content
+    assert "add_users_table" in up_content
+    assert "depends_on:" in up_content  # Dependency template
+
+    down_content = down_file.read_text()
+    assert "depends_on:" in down_content  # Dependency template in down file too
 
 
 async def test_discover_migrations(manager, tmp_path):
@@ -74,9 +88,13 @@ async def test_schema_up(manager, tmp_path):
         )
         assert result == 1
 
-    # Verify tracking table
+    # Verify tracking table includes checksum
     current_version = await manager.get_current_version()
     assert current_version == 20250101000000
+
+    checksums = await manager.get_migration_checksums()
+    assert 20250101000000 in checksums
+    assert len(checksums[20250101000000]) == 64  # SHA-256 hex length
 
 
 async def test_schema_down(manager, tmp_path):
@@ -152,6 +170,394 @@ async def test_migration_error_handling(manager, tmp_path):
     with pytest.raises(MigrationError):
         await manager.schema_up()
 
-    # Verify nothing was recorded
+    # Verify nothing was recorded (transaction rollback)
     current_version = await manager.get_current_version()
     assert current_version == 0
+
+
+# ==================== New Feature Tests ====================
+
+
+async def test_dependency_tracking(manager, tmp_path):
+    """Test migration dependency tracking and validation."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create migrations with dependencies
+    # Migration A - no dependencies
+    up_a = "CREATE TABLE table_a (id SERIAL PRIMARY KEY);"
+    down_a = "DROP TABLE table_a;"
+    (migrations_dir / "20250101000000_create_a_up.sql").write_text(up_a)
+    (migrations_dir / "20250101000000_create_a_down.sql").write_text(down_a)
+
+    # Migration B - depends on A
+    up_b = "-- depends_on: 20250101000000\nCREATE TABLE table_b (id SERIAL PRIMARY KEY, a_id INTEGER REFERENCES table_a(id));"
+    down_b = "DROP TABLE table_b;"
+    (migrations_dir / "20250102000000_create_b_up.sql").write_text(up_b)
+    (migrations_dir / "20250102000000_create_b_down.sql").write_text(down_b)
+
+    # Get dependency graph
+    dep_graph = manager.get_dependency_graph()
+    assert 20250101000000 in dep_graph
+    assert 20250102000000 in dep_graph
+    assert dep_graph[20250101000000] == []
+    assert dep_graph[20250102000000] == [20250101000000]
+
+    # Apply migrations - should be sorted by dependency order
+    applied = await manager.schema_up()
+    assert applied == [20250101000000, 20250102000000]
+
+    # Verify both tables exist
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename IN ('table_a', 'table_b')"
+        )
+        assert result == 2
+
+
+async def test_dependency_validation_fails_on_missing_dependency(manager, tmp_path):
+    """Test that migration fails if dependency is not applied."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create migration that depends on non-existent migration
+    up_sql = "-- depends_on: 20240101000000\nCREATE TABLE test_table (id SERIAL PRIMARY KEY);"
+    down_sql = "DROP TABLE test_table;"
+    (migrations_dir / "20250101000000_with_missing_dep_up.sql").write_text(up_sql)
+    (migrations_dir / "20250101000000_with_missing_dep_down.sql").write_text(down_sql)
+
+    # Should raise DependencyError
+    with pytest.raises(DependencyError) as exc_info:
+        await manager.schema_up()
+
+    assert "depends on unknown migration" in str(exc_info.value)
+
+
+async def test_circular_dependency_detection(manager, tmp_path):
+    """Test circular dependency detection."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create migrations with circular dependencies
+    # A depends on B
+    up_a = "-- depends_on: 20250102000000\nCREATE TABLE table_a (id SERIAL PRIMARY KEY);"
+    down_a = "DROP TABLE table_a;"
+    (migrations_dir / "20250101000000_create_a_up.sql").write_text(up_a)
+    (migrations_dir / "20250101000000_create_a_down.sql").write_text(down_a)
+
+    # B depends on A (circular!)
+    up_b = "-- depends_on: 20250101000000\nCREATE TABLE table_b (id SERIAL PRIMARY KEY);"
+    down_b = "DROP TABLE table_b;"
+    (migrations_dir / "20250102000000_create_b_up.sql").write_text(up_b)
+    (migrations_dir / "20250102000000_create_b_down.sql").write_text(down_b)
+
+    # Should raise DependencyError due to circular dependency
+    with pytest.raises(DependencyError) as exc_info:
+        await manager.schema_up()
+
+    assert "Circular dependency" in str(exc_info.value)
+
+
+async def test_dependency_prevents_rollback(manager, tmp_path):
+    """Test that rollback works correctly with dependencies."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create three migrations: A, B depends on A, C depends on A
+    up_a = "CREATE TABLE table_a (id SERIAL PRIMARY KEY);"
+    down_a = "DROP TABLE table_a;"
+    (migrations_dir / "20250101000000_create_a_up.sql").write_text(up_a)
+    (migrations_dir / "20250101000000_create_a_down.sql").write_text(down_a)
+
+    up_b = "-- depends_on: 20250101000000\nCREATE TABLE table_b (id SERIAL PRIMARY KEY, a_id INTEGER REFERENCES table_a(id));"
+    down_b = "DROP TABLE table_b;"
+    (migrations_dir / "20250102000000_create_b_up.sql").write_text(up_b)
+    (migrations_dir / "20250102000000_create_b_down.sql").write_text(down_b)
+
+    up_c = "-- depends_on: 20250101000000\nCREATE TABLE table_c (id SERIAL PRIMARY KEY);"
+    down_c = "DROP TABLE table_c;"
+    (migrations_dir / "20250103000000_create_c_up.sql").write_text(up_c)
+    (migrations_dir / "20250103000000_create_c_down.sql").write_text(down_c)
+
+    # Apply all three
+    await manager.schema_up()
+
+    # Rollback B and C (target=20250101000000), leaving A
+    # This should work fine - rolling back dependent migrations while keeping their dependency
+    rolled_back = await manager.schema_down(target=20250101000000)
+    assert set(rolled_back) == {20250102000000, 20250103000000}
+
+    current_version = await manager.get_current_version()
+    assert current_version == 20250101000000
+
+    # Rolling back A should also work (no remaining dependencies)
+    await manager.schema_down(target=0)
+
+    current_version = await manager.get_current_version()
+    assert current_version == 0
+
+
+async def test_checksum_validation(manager, tmp_path):
+    """Test checksum calculation and validation."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create and apply migration
+    up_sql = "CREATE TABLE test_table (id SERIAL PRIMARY KEY);"
+    down_sql = "DROP TABLE test_table;"
+
+    up_file = migrations_dir / "20250101000000_test_up.sql"
+    down_file = migrations_dir / "20250101000000_test_down.sql"
+
+    up_file.write_text(up_sql)
+    down_file.write_text(down_sql)
+
+    # Apply migration
+    await manager.schema_up()
+
+    # Verify checksums
+    results = await manager.verify_checksums()
+    assert len(results["valid"]) == 1
+    assert len(results["invalid"]) == 0
+    assert "20250101000000" in results["valid"][0]
+
+    # Modify the migration file
+    up_file.write_text(up_sql + "\n-- Modified!")
+
+    # Verify checksums again - should detect modification
+    results = await manager.verify_checksums()
+    assert len(results["valid"]) == 0
+    assert len(results["invalid"]) == 1
+    assert "CHECKSUM MISMATCH" in results["invalid"][0]
+
+
+async def test_checksum_validation_prevents_migration(manager, tmp_path):
+    """Test that checksum validation prevents running migrations with modified files."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create and apply first migration
+    up_sql_1 = "CREATE TABLE table1 (id SERIAL PRIMARY KEY);"
+    down_sql_1 = "DROP TABLE table1;"
+    up_file_1 = migrations_dir / "20250101000000_first_up.sql"
+    down_file_1 = migrations_dir / "20250101000000_first_down.sql"
+    up_file_1.write_text(up_sql_1)
+    down_file_1.write_text(down_sql_1)
+
+    await manager.schema_up()
+
+    # Modify the applied migration
+    up_file_1.write_text(up_sql_1 + "\n-- Modified!")
+
+    # Create a second migration
+    up_sql_2 = "CREATE TABLE table2 (id SERIAL PRIMARY KEY);"
+    down_sql_2 = "DROP TABLE table2;"
+    (migrations_dir / "20250102000000_second_up.sql").write_text(up_sql_2)
+    (migrations_dir / "20250102000000_second_down.sql").write_text(down_sql_2)
+
+    # Try to apply second migration - should fail due to checksum mismatch
+    with pytest.raises(ChecksumError) as exc_info:
+        await manager.schema_up()
+
+    assert "Checksum validation failed" in str(exc_info.value)
+    assert "has been modified" in str(exc_info.value)
+
+
+async def test_checksum_validation_with_force_flag(manager, tmp_path):
+    """Test that --force flag bypasses checksum validation."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create and apply first migration
+    up_sql_1 = "CREATE TABLE table1 (id SERIAL PRIMARY KEY);"
+    down_sql_1 = "DROP TABLE table1;"
+    up_file_1 = migrations_dir / "20250101000000_first_up.sql"
+    down_file_1 = migrations_dir / "20250101000000_first_down.sql"
+    up_file_1.write_text(up_sql_1)
+    down_file_1.write_text(down_sql_1)
+
+    await manager.schema_up()
+
+    # Modify the applied migration
+    up_file_1.write_text(up_sql_1 + "\n-- Modified!")
+
+    # Create a second migration
+    up_sql_2 = "CREATE TABLE table2 (id SERIAL PRIMARY KEY);"
+    down_sql_2 = "DROP TABLE table2;"
+    (migrations_dir / "20250102000000_second_up.sql").write_text(up_sql_2)
+    (migrations_dir / "20250102000000_second_down.sql").write_text(down_sql_2)
+
+    # Apply with force=True should work
+    applied = await manager.schema_up(force=True)
+    assert 20250102000000 in applied
+
+    # Verify second table was created
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'table2'"
+        )
+        assert result == 1
+
+
+async def test_dry_run_schema_up(manager, tmp_path):
+    """Test dry-run mode for schema up."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create migrations
+    up_sql = "CREATE TABLE test_table (id SERIAL PRIMARY KEY);"
+    down_sql = "DROP TABLE test_table;"
+    (migrations_dir / "20250101000000_test_up.sql").write_text(up_sql)
+    (migrations_dir / "20250101000000_test_down.sql").write_text(down_sql)
+
+    # Run in dry-run mode
+    applied = await manager.schema_up(dry_run=True)
+
+    # Should return what would be applied
+    assert applied == [20250101000000]
+
+    # But table should NOT exist
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'test_table'"
+        )
+        assert result == 0
+
+    # And migration should NOT be recorded
+    current_version = await manager.get_current_version()
+    assert current_version == 0
+
+    # Now apply for real
+    await manager.schema_up(dry_run=False)
+
+    # Table should now exist
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'test_table'"
+        )
+        assert result == 1
+
+
+async def test_dry_run_schema_down(manager, tmp_path):
+    """Test dry-run mode for schema down."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create and apply migration
+    up_sql = "CREATE TABLE test_table (id SERIAL PRIMARY KEY);"
+    down_sql = "DROP TABLE test_table;"
+    (migrations_dir / "20250101000000_test_up.sql").write_text(up_sql)
+    (migrations_dir / "20250101000000_test_down.sql").write_text(down_sql)
+
+    await manager.schema_up()
+
+    # Verify table exists
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'test_table'"
+        )
+        assert result == 1
+
+    # Run rollback in dry-run mode
+    rolled_back = await manager.schema_down(dry_run=True)
+
+    # Should return what would be rolled back
+    assert rolled_back == [20250101000000]
+
+    # But table should STILL exist
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'test_table'"
+        )
+        assert result == 1
+
+    # And migration should still be recorded
+    current_version = await manager.get_current_version()
+    assert current_version == 20250101000000
+
+    # Now rollback for real
+    await manager.schema_down(dry_run=False)
+
+    # Table should be gone
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'test_table'"
+        )
+        assert result == 0
+
+
+async def test_preview_migration(manager, tmp_path):
+    """Test migration preview functionality."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create migration with multi-line SQL
+    up_sql = """-- Create users table
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(100) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_users_email ON users(email);
+"""
+    down_sql = "DROP TABLE users;"
+
+    up_file = migrations_dir / "20250101000000_create_users_up.sql"
+    down_file = migrations_dir / "20250101000000_create_users_down.sql"
+    up_file.write_text(up_sql)
+    down_file.write_text(down_sql)
+
+    # Discover migration
+    migrations = manager._discover_migrations()
+    assert len(migrations) == 1
+
+    migration = migrations[0]
+
+    # Get preview
+    preview = manager.preview_migration(migration, "up")
+
+    assert preview["version"] == 20250101000000
+    assert preview["name"] == "create_users"
+    assert preview["dependencies"] == []
+    assert len(preview["checksum"]) == 64
+    assert "CREATE TABLE users" in preview["sql_preview"]
+    assert preview["total_lines"] > 0
+
+
+async def test_topological_sort_complex_dependencies(manager, tmp_path):
+    """Test topological sort with complex dependency graph."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create complex dependency graph:
+    # A -> no deps
+    # B -> depends on A
+    # C -> depends on A
+    # D -> depends on B and C
+
+    up_a = "CREATE TABLE table_a (id SERIAL PRIMARY KEY);"
+    down_a = "DROP TABLE table_a;"
+    (migrations_dir / "20250101000000_a_up.sql").write_text(up_a)
+    (migrations_dir / "20250101000000_a_down.sql").write_text(down_a)
+
+    up_b = "-- depends_on: 20250101000000\nCREATE TABLE table_b (id SERIAL PRIMARY KEY);"
+    down_b = "DROP TABLE table_b;"
+    (migrations_dir / "20250102000000_b_up.sql").write_text(up_b)
+    (migrations_dir / "20250102000000_b_down.sql").write_text(down_b)
+
+    up_c = "-- depends_on: 20250101000000\nCREATE TABLE table_c (id SERIAL PRIMARY KEY);"
+    down_c = "DROP TABLE table_c;"
+    (migrations_dir / "20250103000000_c_up.sql").write_text(up_c)
+    (migrations_dir / "20250103000000_c_down.sql").write_text(down_c)
+
+    up_d = "-- depends_on: 20250102000000, 20250103000000\nCREATE TABLE table_d (id SERIAL PRIMARY KEY);"
+    down_d = "DROP TABLE table_d;"
+    (migrations_dir / "20250104000000_d_up.sql").write_text(up_d)
+    (migrations_dir / "20250104000000_d_down.sql").write_text(down_d)
+
+    # Apply all migrations
+    applied = await manager.schema_up()
+
+    # Verify correct order: A must be first, D must be last, B and C in between
+    assert applied[0] == 20250101000000  # A first
+    assert applied[3] == 20250104000000  # D last
+    assert 20250102000000 in applied  # B somewhere
+    assert 20250103000000 in applied  # C somewhere
+
+    # Verify all tables exist
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename LIKE 'table_%'"
+        )
+        assert result == 4

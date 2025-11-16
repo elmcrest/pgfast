@@ -32,3 +32,15 @@ class TestDatabaseError(PgfastError):
     """Raised when test database operations fail."""
 
     ...
+
+
+class DependencyError(PgfastError):
+    """Raised when migration dependencies are invalid or unmet."""
+
+    ...
+
+
+class ChecksumError(PgfastError):
+    """Raised when migration file checksums don't match."""
+
+    ...
