@@ -52,6 +52,7 @@ build-backend = "uv_build"
 dev = [
     "httpx>=0.28.1",
     "pgfast",
+    "pre-commit>=4.4.0",
     "pytest-xdist>=3.8.0",
     "ruff>=0.14.5",
     "ty>=0.0.1a26",
