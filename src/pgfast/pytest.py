@@ -91,11 +91,12 @@ async def template_db(db_config, migrations_dir):
         )
         try:
             await admin_conn.execute(
-                f"""
+                """
                 UPDATE pg_database
                 SET datistemplate = TRUE
-                WHERE datname = '{template_name}'
-                """
+                WHERE datname = $1
+                """,
+                template_name,
             )
         finally:
             await admin_conn.close()

@@ -85,11 +85,18 @@ class TestDatabaseManager:
             # Create database from template
             if self.template_db:
                 logger.info(f"Creating from template: {self.template_db}")
-                await admin_conn.execute(
-                    f'CREATE DATABASE "{db_name}" TEMPLATE "{self.template_db}"'
+                # Use format() with %I for safe identifier escaping
+                query = await admin_conn.fetchval(
+                    "SELECT format('CREATE DATABASE %I TEMPLATE %I', $1, $2)",
+                    db_name,
+                    self.template_db,
                 )
+                await admin_conn.execute(query)
             else:
-                await admin_conn.execute(f'CREATE DATABASE "{db_name}"')
+                query = await admin_conn.fetchval(
+                    "SELECT format('CREATE DATABASE %I', $1)", db_name
+                )
+                await admin_conn.execute(query)
 
             # Create pool to new database
             test_dsn = parsed._replace(path=f"/{db_name}").geturl()
@@ -166,7 +173,10 @@ class TestDatabaseManager:
             )
 
             # Drop the database
-            await admin_conn.execute(f'DROP DATABASE IF EXISTS "{db_name}"')
+            query = await admin_conn.fetchval(
+                "SELECT format('DROP DATABASE IF EXISTS %I', $1)", db_name
+            )
+            await admin_conn.execute(query)
 
             # Remove from registry
             _pool_db_names.pop(id(pool), None)
@@ -223,11 +233,12 @@ class TestDatabaseManager:
 
             try:
                 await admin_conn.execute(
-                    f"""
+                    """
                     UPDATE pg_database
                     SET datistemplate = TRUE
-                    WHERE datname = '{template_name}'
-                    """
+                    WHERE datname = $1
+                    """,
+                    template_name,
                 )
                 logger.info(f"Template database created successfully: {template_name}")
                 return template_name
@@ -265,11 +276,12 @@ class TestDatabaseManager:
 
             # Mark as non-template first
             await admin_conn.execute(
-                f"""
+                """
                 UPDATE pg_database
                 SET datistemplate = FALSE
-                WHERE datname = '{template_name}'
-                """
+                WHERE datname = $1
+                """,
+                template_name,
             )
 
             # Terminate connections
@@ -283,7 +295,10 @@ class TestDatabaseManager:
             )
 
             # Drop the database
-            await admin_conn.execute(f'DROP DATABASE IF EXISTS "{template_name}"')
+            query = await admin_conn.fetchval(
+                "SELECT format('DROP DATABASE IF EXISTS %I', $1)", template_name
+            )
+            await admin_conn.execute(query)
 
             logger.info(f"Template database destroyed successfully: {template_name}")
 

@@ -418,8 +418,11 @@ def test_db_cleanup(
                         db_name,
                     )
 
-                    # Drop database
-                    await admin_conn.execute(f'DROP DATABASE IF EXISTS "{db_name}"')
+                    # Drop database using format() with %I for safe identifier escaping
+                    query = await admin_conn.fetchval(
+                        "SELECT format('DROP DATABASE IF EXISTS %I', $1)", db_name
+                    )
+                    await admin_conn.execute(query)
                     console.print(f"[green]✓[/green] Dropped {db_name}")
 
                 console.print(
