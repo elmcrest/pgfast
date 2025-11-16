@@ -43,6 +43,8 @@ jobs:
       - name: type checking
         run: uv run --dev ty check
       - name: Run tests
+        env:
+            TEST_DATABASE_URL: postgres://postgres@localhost:5432/pgfast
         run: uv run --dev pytest -n auto -v
 
   release:
