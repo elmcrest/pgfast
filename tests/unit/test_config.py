@@ -48,11 +48,9 @@ def test_config_validates_url_format():
 
 
 def test_config_with_paths():
-    """Should accept custom schema/migration paths."""
+    """Should accept custom migration paths."""
     config = DatabaseConfig(
         url="postgresql://localhost/test",
-        schema_dir="custom/schema",
         migrations_dir="custom/migrations",
     )
-    assert config.schema_dir == "custom/schema"
     assert config.migrations_dir == "custom/migrations"

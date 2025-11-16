@@ -1,18 +1,9 @@
-import pytest
 import asyncpg
+import pytest
+
 from pgfast.config import DatabaseConfig
-from pgfast.connection import create_pool, close_pool
+from pgfast.connection import close_pool, create_pool
 from pgfast.exceptions import ConnectionError
-
-
-@pytest.fixture
-def db_config():
-    """Test database configuration."""
-    return DatabaseConfig(
-        url="postgresql://@localhost:5432/pgfast_test",
-        min_connections=2,
-        max_connections=5,
-    )
 
 
 @pytest.mark.asyncio

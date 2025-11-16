@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "Marius Räsener", email = "931919+elmcrest@users.noreply.github.com" }
+    { name = "Marius Räsener", email = "931919+elmcrest@users.noreply.github.com" },
 ]
 requires-python = ">=3.14"
 dependencies = [
@@ -13,27 +13,24 @@ dependencies = [
     "pytest>=9.0.1",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.0.0",
+    "typer>=0.20.0",
 ]
 
 [project.scripts]
-pgfast = "pgfast:main"
+pgfast = "pgfast.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.9.9,<0.10.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = [
-    "httpx>=0.28.1",
-    "pgfast",
-    "ruff>=0.14.5",
-    "ty>=0.0.1a26",
-]
+dev = ["httpx>=0.28.1", "pgfast", "ruff>=0.14.5", "ty>=0.0.1a26"]
 
 [tool.uv.workspace]
-members = [
-    ".",
-]
+members = ["."]
 
 [tool.uv.sources]
 pgfast = { workspace = true, editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

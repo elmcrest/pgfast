@@ -20,3 +20,9 @@ class ConfigurationError(PgfastError):
     """Raised when configuration is invalid."""
 
     ...
+
+
+class MigrationError(PgfastError):
+    """Raised when migration operations fail."""
+
+    ...

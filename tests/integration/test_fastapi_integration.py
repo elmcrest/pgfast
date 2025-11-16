@@ -1,23 +1,13 @@
 """Integration tests for FastAPI integration."""
 
-import pytest
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends
-from fastapi.testclient import TestClient
+
 import asyncpg
+import pytest
+from fastapi import Depends, FastAPI
+from fastapi.testclient import TestClient
 
-from pgfast.config import DatabaseConfig
 from pgfast.fastapi import create_lifespan, get_db_pool
-
-
-@pytest.fixture
-def db_config():
-    """Test database configuration."""
-    return DatabaseConfig(
-        url="postgresql://localhost:5432/pgfast_test",
-        min_connections=2,
-        max_connections=5,
-    )
 
 
 @pytest.mark.asyncio

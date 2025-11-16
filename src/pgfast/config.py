@@ -16,7 +16,6 @@ class DatabaseConfig:
         max_connections: Maximum pool size (default: 20)
         timeout: Connection timeout in seconds (default: 10.0)
         command_timeout: Query timeout in seconds (default: 60.0)
-        schema_dir: Directory for schema SQL files (default: "db/schema")
         migrations_dir: Directory for migrations (default: "db/migrations")
         fixtures_dir: Directory for test fixtures (default: "db/fixtures")
 
@@ -29,7 +28,6 @@ class DatabaseConfig:
     max_connections: int = 20
     timeout: float = 10.0
     command_timeout: float = 60.0
-    schema_dir: str = "db/schema"
     migrations_dir: str = "db/migrations"
     fixtures_dir: str = "db/fixtures"
 
