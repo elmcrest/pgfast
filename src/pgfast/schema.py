@@ -711,13 +711,17 @@ class SchemaManager:
         up_file = target_path / f"{version}_{clean_name}_up.sql"
         down_file = target_path / f"{version}_{clean_name}_down.sql"
 
-        # If files already exist (rare but possible with fast execution), increment version
+        # Check if ANY migration with this version exists (not just same name)
+        # This prevents version conflicts when creating migrations with different names rapidly
         counter = 0
-        while up_file.exists() or down_file.exists():
+        while any(
+            f.stem.startswith(version) for f in target_path.glob(f"{version}*_up.sql")
+        ):
             counter += 1
             version_int = int(version) + counter
-            up_file = target_path / f"{version_int}_{clean_name}_up.sql"
-            down_file = target_path / f"{version_int}_{clean_name}_down.sql"
+            version = str(version_int)
+            up_file = target_path / f"{version}_{clean_name}_up.sql"
+            down_file = target_path / f"{version}_{clean_name}_down.sql"
             if counter > 1000:  # Safety limit
                 raise SchemaError("Unable to generate unique migration version")
 
