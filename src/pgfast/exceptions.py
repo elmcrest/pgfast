@@ -19,7 +19,16 @@ class SchemaError(PgfastError):
 class MigrationError(PgfastError):
     """Raised when migration operations fail."""
 
-    ...
+    def __init__(self, message: str, applied_migrations: list[int] | None = None):
+        """Initialize MigrationError.
+
+        Args:
+            message: Error message
+            applied_migrations: List of migration versions that were successfully
+                applied before the error occurred (if applicable)
+        """
+        super().__init__(message)
+        self.applied_migrations = applied_migrations or []
 
 
 class TestDatabaseError(PgfastError):

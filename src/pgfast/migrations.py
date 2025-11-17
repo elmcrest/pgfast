@@ -20,6 +20,7 @@ class Migration(BaseModel):
     name: str
     up_file: Path
     down_file: Path
+    source_dir: Path  # Track which directory this migration came from
 
     @property
     def is_complete(self) -> bool:

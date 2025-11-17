@@ -28,7 +28,9 @@ async def test_ensure_migrations_table(manager):
 
 async def test_create_migration(manager):
     """Test migration file creation."""
-    up_file, down_file = manager.create_migration("add_users_table")
+    # Get target directory from manager's config
+    target_dir = manager.migrations_dirs[0]
+    up_file, down_file = manager.create_migration("add_users_table", target_dir)
 
     assert up_file.exists()
     assert down_file.exists()
@@ -575,15 +577,17 @@ async def test_topological_sort_complex_dependencies(manager, tmp_path):
 
 async def test_auto_dependency_creation(manager, tmp_path):
     """Test that new migrations automatically depend on the latest existing migration."""
+    # Use the migrations directory already configured in the manager
+    migrations_dir = manager.migrations_dirs[0]
 
     # Create first migration (should have no dependencies)
-    up1, down1 = manager.create_migration("first_migration")
+    up1, down1 = manager.create_migration("first_migration", migrations_dir)
     content1 = up1.read_text()
 
     assert "depends_on:" not in content1
 
     # Create second migration (should auto-depend on first)
-    up2, down2 = manager.create_migration("second_migration")
+    up2, down2 = manager.create_migration("second_migration", migrations_dir)
     content2 = up2.read_text()
 
     assert "depends_on:" in content2
@@ -592,13 +596,15 @@ async def test_auto_dependency_creation(manager, tmp_path):
     assert first_version in content2
 
     # Create third migration with auto_depend=False (should have no dependencies)
-    up3, down3 = manager.create_migration("third_migration", auto_depend=False)
+    up3, down3 = manager.create_migration(
+        "third_migration", migrations_dir, auto_depend=False
+    )
     content3 = up3.read_text()
 
     assert "depends_on:" not in content3
 
     # Create fourth migration (should auto-depend on third, the latest)
-    up4, down4 = manager.create_migration("fourth_migration")
+    up4, down4 = manager.create_migration("fourth_migration", migrations_dir)
     content4 = up4.read_text()
 
     assert "depends_on:" in content4

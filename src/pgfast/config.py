@@ -1,5 +1,6 @@
 """Database configuration."""
 
+from pathlib import Path
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -14,8 +15,11 @@ class DatabaseConfig(BaseModel):
         max_connections: Maximum pool size (default: 20)
         timeout: Connection timeout in seconds (default: 10.0)
         command_timeout: Query timeout in seconds (default: 60.0)
-        migrations_dir: Directory for migrations (default: "db/migrations")
-        fixtures_dir: Directory for test fixtures (default: "db/fixtures")
+        migrations_dirs: Optional list of migration directories. If None, auto-discover
+        fixtures_dirs: Optional list of fixture directories. If None, auto-discover
+        migrations_search_pattern: Glob pattern for discovering migrations (default: "**/migrations")
+        fixtures_search_pattern: Glob pattern for discovering fixtures (default: "**/fixtures")
+        search_base_path: Base path for auto-discovery (default: current working directory)
 
     Raises:
         ValidationError: If configuration is invalid
@@ -26,8 +30,16 @@ class DatabaseConfig(BaseModel):
     max_connections: int = Field(default=20, gt=0)
     timeout: float = Field(default=10.0, gt=0)
     command_timeout: float = Field(default=60.0, gt=0)
-    migrations_dir: str = "db/migrations"
-    fixtures_dir: str = "db/fixtures"
+
+    # Optional explicit directory configuration
+    # If None, auto-discovery is used
+    migrations_dirs: list[str] | None = None
+    fixtures_dirs: list[str] | None = None
+
+    # Search configuration for auto-discovery
+    migrations_search_pattern: str = "**/migrations"
+    fixtures_search_pattern: str = "**/fixtures"
+    search_base_path: Path | None = None  # None = cwd()
 
     model_config = {"frozen": True}  # Configs shouldn't change after creation
 
@@ -110,3 +122,67 @@ class DatabaseConfig(BaseModel):
             raise
         except Exception as e:
             raise ValueError(f"Invalid database URL: {self.url}") from e
+
+    def discover_migrations_dirs(self) -> list[Path]:
+        """Discover migration directories.
+
+        Returns list of discovered directories, or empty list if none found.
+        If migrations_dirs is explicitly set, returns those paths.
+        Otherwise, performs auto-discovery using the search pattern.
+        """
+        if self.migrations_dirs is not None:
+            # Explicit configuration - deduplicate paths
+            seen = set()
+            result = []
+            for d in self.migrations_dirs:
+                p = Path(d).resolve()  # Resolve to absolute path for deduplication
+                if p not in seen:
+                    seen.add(p)
+                    result.append(p)
+            return result
+
+        # Auto-discover
+        base = self.search_base_path or Path.cwd()
+        matches = sorted(base.glob(self.migrations_search_pattern))
+        # Deduplicate discovered paths
+        seen = set()
+        result = []
+        for p in matches:
+            if p.is_dir():
+                resolved = p.resolve()
+                if resolved not in seen:
+                    seen.add(resolved)
+                    result.append(resolved)
+        return result
+
+    def discover_fixtures_dirs(self) -> list[Path]:
+        """Discover fixture directories.
+
+        Returns list of discovered directories, or empty list if none found.
+        If fixtures_dirs is explicitly set, returns those paths.
+        Otherwise, performs auto-discovery using the search pattern.
+        """
+        if self.fixtures_dirs is not None:
+            # Explicit configuration - deduplicate paths
+            seen = set()
+            result = []
+            for d in self.fixtures_dirs:
+                p = Path(d).resolve()  # Resolve to absolute path for deduplication
+                if p not in seen:
+                    seen.add(p)
+                    result.append(p)
+            return result
+
+        # Auto-discover
+        base = self.search_base_path or Path.cwd()
+        matches = sorted(base.glob(self.fixtures_search_pattern))
+        # Deduplicate discovered paths
+        seen = set()
+        result = []
+        for p in matches:
+            if p.is_dir():
+                resolved = p.resolve()
+                if resolved not in seen:
+                    seen.add(resolved)
+                    result.append(resolved)
+        return result

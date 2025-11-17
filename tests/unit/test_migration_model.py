@@ -9,7 +9,11 @@ def test_migration_creation(tmp_path):
     down_file = tmp_path / "20250101000000_test_down.sql"
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     assert migration.version == 20250101000000
@@ -24,7 +28,11 @@ def test_migration_is_complete(tmp_path):
     down_file = tmp_path / "test_down.sql"
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     # Initially incomplete
@@ -55,7 +63,11 @@ CREATE TABLE test (id INT);
     down_file.write_text("DROP TABLE test;")
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     deps = migration.dependencies
@@ -71,7 +83,11 @@ def test_migration_dependencies_case_insensitive(tmp_path):
     down_file.write_text("DROP TABLE test;")
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     assert migration.dependencies == [20240101000000]
@@ -90,7 +106,11 @@ CREATE TABLE test (id INT);
     down_file.write_text("DROP TABLE test;")
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     deps = migration.dependencies
@@ -109,7 +129,11 @@ CREATE TABLE test (id INT);
     down_file.write_text("-- depends_on: 20240101000000\nDROP TABLE test;")
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     # Should deduplicate
@@ -125,7 +149,11 @@ def test_migration_dependencies_empty(tmp_path):
     down_file.write_text("DROP TABLE test;")
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     assert migration.dependencies == []
@@ -146,7 +174,11 @@ CREATE TABLE test (id INT);
     down_file.write_text("DROP TABLE test;")
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     # Should only parse valid version numbers, skipping invalid ones
@@ -162,7 +194,11 @@ def test_migration_checksum_calculation(tmp_path):
     down_file.write_text("DROP TABLE test;")
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     checksum = migration.calculate_checksum()
@@ -181,7 +217,11 @@ def test_migration_checksum_deterministic(tmp_path):
     down_file.write_text("DROP TABLE test;")
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     checksum1 = migration.calculate_checksum()
@@ -199,7 +239,11 @@ def test_migration_checksum_changes_on_modification(tmp_path):
     down_file.write_text("DROP TABLE test;")
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     checksum1 = migration.calculate_checksum()
@@ -221,7 +265,11 @@ def test_migration_checksum_includes_both_files(tmp_path):
     down_file.write_text("DROP TABLE test;")
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     checksum1 = migration.calculate_checksum()
@@ -246,7 +294,11 @@ def test_migration_read_sql_up(tmp_path):
     down_file.write_text(down_content)
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     assert migration.read_sql("up") == up_content
@@ -264,7 +316,11 @@ def test_migration_read_sql_down(tmp_path):
     down_file.write_text(down_content)
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     assert migration.read_sql("down") == down_content
@@ -279,7 +335,11 @@ def test_migration_read_sql_invalid_direction(tmp_path):
     down_file.write_text("DROP TABLE test;")
 
     migration = Migration(
-        version=20250101000000, name="test", up_file=up_file, down_file=down_file
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
     )
 
     try:

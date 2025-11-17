@@ -50,10 +50,19 @@ def test_config_rejects_invalid_pool_size():
         )
 
 
-def test_config_with_paths():
-    """Should accept custom migration paths."""
+def test_config_with_explicit_dirs():
+    """Should accept explicit migration and fixture directories."""
     config = DatabaseConfig(
         url="postgresql://localhost/test",
-        migrations_dir="custom/migrations",
+        migrations_dirs=["app/users/migrations", "app/posts/migrations"],
+        fixtures_dirs=["app/users/fixtures", "app/posts/fixtures"],
     )
-    assert config.migrations_dir == "custom/migrations"
+    assert config.migrations_dirs == ["app/users/migrations", "app/posts/migrations"]
+    assert config.fixtures_dirs == ["app/users/fixtures", "app/posts/fixtures"]
+
+
+def test_config_auto_discovery_defaults():
+    """Should have None for dirs by default to enable auto-discovery."""
+    config = DatabaseConfig(url="postgresql://localhost/test")
+    assert config.migrations_dirs is None
+    assert config.fixtures_dirs is None

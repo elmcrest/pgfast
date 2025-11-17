@@ -8,15 +8,12 @@ Or selectively:
 """
 
 import uuid
-from pathlib import Path
 from typing import AsyncGenerator
 
 import asyncpg
 import pytest
 
 from pgfast.config import DatabaseConfig
-from pgfast.connection import close_pool
-from pgfast.schema import SchemaManager
 from pgfast.testing import (
     TestDatabaseManager,
     cleanup_test_pool,
@@ -41,33 +38,22 @@ def db_config():
 
 
 @pytest.fixture(scope="session")
-def migrations_dir():
-    """Path to migrations directory.
-
-    Override in your conftest.py if using custom location.
-    """
-    return "db/migrations"
-
-
-@pytest.fixture(scope="session")
-def fixtures_dir():
-    """Path to fixtures directory.
-
-    Override in your conftest.py if using custom location.
-    """
-    return "db/fixtures"
-
-
-@pytest.fixture(scope="session")
-async def template_db(db_config, migrations_dir):
+async def template_db(db_config):
     """Create template database for faster test setup.
 
     Created once per test session, then cloned for each test.
     This provides significant speed improvements for large schemas.
+    Uses auto-discovery to find all migrations directories.
     """
-    # Check if migrations directory exists and has migrations
-    migrations_path = Path(migrations_dir)
-    if not migrations_path.exists() or not list(migrations_path.glob("*.sql")):
+    # Check if any migrations exist
+    migrations_dirs = db_config.discover_migrations_dirs()
+    has_migrations = False
+    for migrations_dir in migrations_dirs:
+        if migrations_dir.exists() and list(migrations_dir.glob("*.sql")):
+            has_migrations = True
+            break
+
+    if not has_migrations:
         # No migrations, skip template creation
         yield None
         return
@@ -75,31 +61,9 @@ async def template_db(db_config, migrations_dir):
     manager = TestDatabaseManager(db_config)
     template_name = f"pgfast_template_{uuid.uuid4().hex[:8]}"
 
-    # Create template database
-    pool = await manager.create_test_db(db_name=template_name)
-
     try:
-        # Apply migrations to template
-        schema_manager = SchemaManager(pool, migrations_dir)
-        await schema_manager.schema_up()
-
-        await close_pool(pool)
-
-        # Mark as template
-        admin_conn = await asyncpg.connect(
-            db_config.url.rsplit("/", 1)[0] + "/postgres", timeout=db_config.timeout
-        )
-        try:
-            await admin_conn.execute(
-                """
-                UPDATE pg_database
-                SET datistemplate = TRUE
-                WHERE datname = $1
-                """,
-                template_name,
-            )
-        finally:
-            await admin_conn.close()
+        # Create template database with migrations applied
+        await manager.create_template_db(template_name)
 
         yield template_name
 
@@ -124,14 +88,12 @@ async def isolated_db(db_config, template_db) -> AsyncGenerator[asyncpg.Pool, No
 
 
 @pytest.fixture
-async def isolated_db_no_template(
-    db_config, migrations_dir
-) -> AsyncGenerator[asyncpg.Pool, None]:
+async def isolated_db_no_template(db_config) -> AsyncGenerator[asyncpg.Pool, None]:
     """Provide isolated test database without template.
 
     Use this if you don't want template optimization or need custom setup.
     """
-    pool = await create_test_pool_with_schema(db_config, migrations_dir)
+    pool = await create_test_pool_with_schema(db_config)
 
     yield pool
 
@@ -178,30 +140,21 @@ async def db_pool_factory(db_config):
 
 
 @pytest.fixture
-async def db_with_fixtures(isolated_db, fixtures_dir):
+async def db_with_fixtures(isolated_db, db_config):
     """Database with fixtures loaded.
 
-    Loads all SQL files from fixtures directory.
+    Auto-discovers and loads all SQL files from all configured fixture directories.
     """
-    fixtures_path = Path(fixtures_dir)
+    manager = TestDatabaseManager(db_config)
 
-    # Only load fixtures if directory exists
-    if fixtures_path.exists():
-        manager = TestDatabaseManager(
-            DatabaseConfig(url="postgresql://localhost/postgres")
-        )
-        fixture_files = sorted(fixtures_path.glob("*.sql"))
-
-        if fixture_files:
-            await manager.load_fixtures(isolated_db, fixture_files)
+    # Auto-discover and load fixtures
+    await manager.load_fixtures(isolated_db, fixtures=None)
 
     return isolated_db
 
 
 __all__ = [
     "db_config",
-    "migrations_dir",
-    "fixtures_dir",
     "template_db",
     "isolated_db",
     "isolated_db_no_template",

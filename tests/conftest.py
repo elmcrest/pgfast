@@ -11,22 +11,10 @@ from pgfast.pytest import (
 from pgfast.pytest import (
     db_pool_factory,  # noqa: F401
     db_with_fixtures,  # noqa: F401
-    fixtures_dir,  # noqa: F401
     isolated_db,  # noqa: F401
     isolated_db_no_template,  # noqa: F401
     template_db,  # noqa: F401
 )
-
-
-@pytest.fixture(scope="session")
-def migrations_dir(tmp_path_factory):
-    """Create empty migrations directory for tests.
-
-    Override the default fixture to prevent template_db from using
-    the project's real migrations directory.
-    """
-    migrations = tmp_path_factory.mktemp("migrations")
-    return str(migrations)
 
 
 @pytest.fixture(scope="session")
@@ -50,10 +38,16 @@ async def manager(isolated_db, tmp_path):  # noqa: F811
 
     Uses isolated_db fixture which provides a clean test database.
     """
-    migrations_dir = tmp_path / "migrations"  # noqa: F811
+    migrations_dir = tmp_path / "migrations"
     migrations_dir.mkdir()
+
+    # Create config with explicit migrations_dirs
+    config = DatabaseConfig(
+        url=os.getenv("TEST_DATABASE_URL", "postgresql://localhost/postgres"),
+        migrations_dirs=[str(migrations_dir)],
+    )
 
     return SchemaManager(
         pool=isolated_db,
-        migrations_dir=str(migrations_dir),
+        config=config,
     )

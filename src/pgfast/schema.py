@@ -6,6 +6,7 @@ from pathlib import Path
 
 import asyncpg
 
+from pgfast.config import DatabaseConfig
 from pgfast.exceptions import (
     ChecksumError,
     DependencyError,
@@ -22,32 +23,35 @@ class SchemaManager:
 
     Args:
         pool: asyncpg connection pool
-        migrations_dir: Directory containing migration files
+        config: DatabaseConfig with migrations directories configuration
     """
 
     def __init__(
         self,
         pool: asyncpg.Pool,
-        migrations_dir: str = "db/migrations",
+        config: DatabaseConfig,
     ):
         self.pool = pool
-        self.migrations_dir = Path(migrations_dir)
+        self.config = config
+        self.migrations_dirs = config.discover_migrations_dirs()
 
-    def _discover_migrations(self) -> list[Migration]:
-        """Discover all migrations in migrations directory.
+    def _discover_in_directory(self, migrations_dir: Path) -> list[Migration]:
+        """Discover migrations in a single directory.
+
+        Args:
+            migrations_dir: Path to migrations directory
 
         Returns:
-            List of Migration objects sorted by version
+            List of Migration objects from this directory
 
         Raises:
-            SchemaError: If migrations directory doesn't exist
             MigrationError: If migration files are malformed
         """
-        if not self.migrations_dir.exists():
-            raise SchemaError(f"Migrations directory not found: {self.migrations_dir}")
+        if not migrations_dir.exists():
+            return []
 
         # Find all _up.sql files
-        up_files = list(self.migrations_dir.glob("*_up.sql"))
+        up_files = list(migrations_dir.glob("*_up.sql"))
 
         migrations = []
         for up_file in up_files:
@@ -69,12 +73,51 @@ class SchemaManager:
 
             migrations.append(
                 Migration(
-                    version=version, name=name, up_file=up_file, down_file=down_file
+                    version=version,
+                    name=name,
+                    up_file=up_file,
+                    down_file=down_file,
+                    source_dir=migrations_dir,
                 )
             )
 
+        return migrations
+
+    def _discover_migrations(self) -> list[Migration]:
+        """Discover all migrations across all configured directories.
+
+        Returns:
+            List of Migration objects sorted by version
+
+        Raises:
+            MigrationError: If migration files are malformed or version conflicts exist
+        """
+        all_migrations = []
+        version_sources: dict[
+            int, Path
+        ] = {}  # Track version -> source_dir for conflict detection
+
+        # Deduplicate directories to avoid scanning the same directory twice
+        seen_dirs = set()
+        unique_dirs = []
+        for d in self.migrations_dirs:
+            resolved = d.resolve() if isinstance(d, Path) else Path(d).resolve()
+            if resolved not in seen_dirs:
+                seen_dirs.add(resolved)
+                unique_dirs.append(resolved)
+
+        for migrations_dir in unique_dirs:
+            for migration in self._discover_in_directory(migrations_dir):
+                if migration.version in version_sources:
+                    raise MigrationError(
+                        f"Version conflict: {migration.version} found in both "
+                        f"{version_sources[migration.version]} and {migrations_dir}"
+                    )
+                version_sources[migration.version] = migrations_dir
+                all_migrations.append(migration)
+
         # Sort by version
-        return sorted(migrations, key=lambda m: m.version)
+        return sorted(all_migrations, key=lambda m: m.version)
 
     async def _ensure_migrations_table(self) -> None:
         """Create migrations tracking table if it doesn't exist.
@@ -487,7 +530,8 @@ class SchemaManager:
                 logger.error(f"Failed to apply migration {migration.version}: {e}")
                 raise MigrationError(
                     f"Failed to apply migration {migration.version} "
-                    f"({migration.name}): {e}"
+                    f"({migration.name}): {e}",
+                    applied_migrations=applied,
                 ) from e
 
         return applied
@@ -621,47 +665,61 @@ class SchemaManager:
         return rolled_back
 
     def create_migration(
-        self, name: str, auto_depend: bool = True
+        self, name: str, target_dir: str | Path, auto_depend: bool = True
     ) -> tuple[Path, Path]:
-        """Create a new migration file pair (up and down).
+        """Create a new migration file pair (up and down) in specified directory.
 
-        By default, new migrations automatically depend on the latest existing migration.
-        This ensures migrations are applied in the correct order while still allowing
-        flexibility for parallel development (disable with auto_depend=False).
+        By default, new migrations automatically depend on the latest existing migration
+        across ALL migration directories. This ensures migrations are applied in the
+        correct order while still allowing flexibility for parallel development
+        (disable with auto_depend=False).
 
         Args:
             name: Human-readable migration name (e.g., "add_users_table")
+            target_dir: Directory to create migration files in
             auto_depend: If True (default), automatically depend on the latest migration
 
         Returns:
             Tuple of (up_file_path, down_file_path)
 
         Raises:
-            SchemaError: If migrations directory doesn't exist
+            SchemaError: If target directory cannot be created
         """
-        if not self.migrations_dir.exists():
-            self.migrations_dir.mkdir(parents=True, exist_ok=True)
+        target_path = Path(target_dir)
+        target_path.mkdir(parents=True, exist_ok=True)
 
-        # Get existing migrations to determine dependencies
+        # Get existing migrations across ALL directories to determine dependencies
         existing_migrations = self._discover_migrations()
 
         # Determine dependency comment
         dependency_comment = ""
         if auto_depend and existing_migrations:
-            # Get the latest migration version
+            # Get the latest migration version across all directories
             latest = max(existing_migrations, key=lambda m: m.version)
             dependency_comment = f"-- depends_on: {latest.version}\n"
 
-        # Generate timestamp version
-        version = datetime.now().strftime("%Y%m%d%H%M%S")
+        # Generate timestamp version with milliseconds to avoid conflicts
+        # Format: YYYYMMDDHHMMSSfff (17 digits)
+        now = datetime.now()
+        version = now.strftime("%Y%m%d%H%M%S") + f"{now.microsecond // 1000:03d}"
 
         # Sanitize name (replace spaces with underscores, remove special chars)
         clean_name = name.replace(" ", "_").lower()
         clean_name = "".join(c for c in clean_name if c.isalnum() or c == "_")
 
-        # Create file paths
-        up_file = self.migrations_dir / f"{version}_{clean_name}_up.sql"
-        down_file = self.migrations_dir / f"{version}_{clean_name}_down.sql"
+        # Create file paths and ensure uniqueness
+        up_file = target_path / f"{version}_{clean_name}_up.sql"
+        down_file = target_path / f"{version}_{clean_name}_down.sql"
+
+        # If files already exist (rare but possible with fast execution), increment version
+        counter = 0
+        while up_file.exists() or down_file.exists():
+            counter += 1
+            version_int = int(version) + counter
+            up_file = target_path / f"{version_int}_{clean_name}_up.sql"
+            down_file = target_path / f"{version_int}_{clean_name}_down.sql"
+            if counter > 1000:  # Safety limit
+                raise SchemaError("Unable to generate unique migration version")
 
         # Create files with templates
         up_template = f"""-- Migration: {name}

@@ -10,7 +10,7 @@ import asyncpg
 
 from pgfast.config import DatabaseConfig
 from pgfast.connection import close_pool, create_pool
-from pgfast.exceptions import PgfastError
+from pgfast.exceptions import MigrationError, PgfastError
 from pgfast.schema import SchemaManager
 from pgfast.testing import TestDatabaseManager, _pool_db_names
 
@@ -66,48 +66,45 @@ def get_config() -> DatabaseConfig:
         print(f"{RED}ERROR:{RESET} DATABASE_URL environment variable not set")
         sys.exit(1)
     else:
+        # Parse optional directory overrides (colon-separated paths)
+        migrations_dirs = None
+        if dirs := os.getenv("PGFAST_MIGRATIONS_DIRS"):
+            migrations_dirs = [d.strip() for d in dirs.split(":") if d.strip()]
+
+        fixtures_dirs = None
+        if dirs := os.getenv("PGFAST_FIXTURES_DIRS"):
+            fixtures_dirs = [d.strip() for d in dirs.split(":") if d.strip()]
+
         return DatabaseConfig(
             url=url,
-            migrations_dir=os.getenv("PGFAST_MIGRATIONS_DIR", "db/migrations"),
-            fixtures_dir=os.getenv("PGFAST_FIXTURES_DIR", "db/fixtures"),
+            migrations_dirs=migrations_dirs,
+            fixtures_dirs=fixtures_dirs,
         )
 
 
-def cmd_init(args: argparse.Namespace) -> None:
-    """Initialize pgfast directory structure."""
-    dirs = [
-        Path(args.migrations_dir),
-        Path("db/fixtures"),
-    ]
-
-    for dir_path in dirs:
-        dir_path.mkdir(parents=True, exist_ok=True)
-        print(f"✓ Created directory: {dir_path}")
-
-    print(f"\n{GREEN}Initialization complete!{RESET}")
-    print("\nNext steps:")
-    print("  1. Set DATABASE_URL environment variable")
-    print("  2. Run 'pgfast schema create' to create your first migration")
-    print("  3. Edit migration files and run 'pgfast schema up'")
-
-
 def cmd_schema_create(args: argparse.Namespace) -> None:
-    """Create a new migration file pair.
+    """Create a new migration file pair in specified module.
 
-    By default, new migrations automatically depend on the latest existing migration.
-    Use --no-depends to create an independent migration for parallel development.
+    By default, new migrations automatically depend on the latest existing migration
+    across all modules. Use --no-depends to create an independent migration for
+    parallel development.
     """
     try:
         config = get_config()
 
+        # Build target directory path
+        target_dir = Path(args.module) / "migrations"
+
         # Create manager (no pool needed for file operations)
         manager = SchemaManager(
             pool=None,  # type: ignore
-            migrations_dir=config.migrations_dir,
+            config=config,
         )
 
         up_file, down_file = manager.create_migration(
-            args.name, auto_depend=not args.no_depends
+            name=args.name,
+            target_dir=target_dir,
+            auto_depend=not args.no_depends,
         )
 
         print(f"\n{GREEN}✓ Created migration files:{RESET}")
@@ -137,7 +134,7 @@ def cmd_schema_up(args: argparse.Namespace) -> None:
         try:
             manager = SchemaManager(
                 pool=pool,
-                migrations_dir=config.migrations_dir,
+                config=config,
             )
 
             if args.dry_run:
@@ -188,7 +185,15 @@ def cmd_schema_up(args: argparse.Namespace) -> None:
             else:
                 print(f"{YELLOW}No pending migrations to apply.{RESET}")
 
-        except PgfastError as e:
+        except MigrationError as e:
+            # Show partial success if any migrations were applied before failure
+            if hasattr(e, "applied_migrations") and e.applied_migrations:
+                print(
+                    f"\n{GREEN}✓ Applied {len(e.applied_migrations)} migration(s) before failure:{RESET}"
+                )
+                for version in e.applied_migrations:
+                    print(f"  - {version}")
+
             print(f"\n{RED}ERROR:{RESET} {e}")
             sys.exit(1)
         finally:
@@ -207,7 +212,7 @@ def cmd_schema_down(args: argparse.Namespace) -> None:
         try:
             manager = SchemaManager(
                 pool=pool,
-                migrations_dir=config.migrations_dir,
+                config=config,
             )
 
             if args.dry_run:
@@ -291,7 +296,7 @@ def cmd_schema_status(args: argparse.Namespace) -> None:
         try:
             manager = SchemaManager(
                 pool=pool,
-                migrations_dir=config.migrations_dir,
+                config=config,
             )
 
             current_version = await manager.get_current_version()
@@ -346,7 +351,7 @@ def cmd_schema_deps(args: argparse.Namespace) -> None:
         try:
             manager = SchemaManager(
                 pool=pool,
-                migrations_dir=config.migrations_dir,
+                config=config,
             )
 
             dep_graph = manager.get_dependency_graph()
@@ -408,7 +413,7 @@ def cmd_schema_verify(args: argparse.Namespace) -> None:
         try:
             manager = SchemaManager(
                 pool=pool,
-                migrations_dir=config.migrations_dir,
+                config=config,
             )
 
             print("Verifying migration checksums...\n")
@@ -488,18 +493,32 @@ def cmd_fixtures_load(args: argparse.Namespace) -> None:
             # Load specified fixtures
             fixture_paths = [Path(f) for f in args.fixtures]
         else:
-            # Load all fixtures from fixtures_dir
-            fixtures_dir = Path(config.fixtures_dir)
-            if not fixtures_dir.exists():
-                print(
-                    f"{RED}ERROR:{RESET} Fixtures directory not found: {fixtures_dir}"
-                )
-                sys.exit(1)
+            # Auto-discover fixtures from all fixture directories
+            fixtures_dirs = config.discover_fixtures_dirs()
 
-            fixture_paths = sorted(fixtures_dir.glob("*.sql"))
-            if not fixture_paths:
-                print(f"{YELLOW}No fixture files found in {fixtures_dir}{RESET}")
+            if not fixtures_dirs:
+                print(f"{YELLOW}No fixture directories found{RESET}")
                 return
+
+            # Collect all fixtures from all directories
+            fixture_paths = []
+            for fixtures_dir in fixtures_dirs:
+                if fixtures_dir.exists():
+                    fixture_paths.extend(fixtures_dir.glob("*.sql"))
+
+            # Sort by full path for deterministic ordering
+            fixture_paths = sorted(fixture_paths)
+
+            if not fixture_paths:
+                print(f"{YELLOW}No fixture files found{RESET}")
+                return
+
+            print(
+                f"Found {len(fixture_paths)} fixture(s) from {len(fixtures_dirs)} directory(ies):"
+            )
+            for fp in fixture_paths:
+                print(f"  - {fp}")
+            print()
 
         # Determine target database
         parsed = urlparse(config.url)
@@ -655,18 +674,6 @@ def create_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True, help="Command")
 
-    # Top-level: pgfast init
-    init_parser = subparsers.add_parser(
-        "init", help="Initialize pgfast directory structure"
-    )
-    init_parser.add_argument(
-        "--migrations-dir",
-        "-m",
-        default="db/migrations",
-        help="Migrations directory path (default: db/migrations)",
-    )
-    init_parser.set_defaults(func=cmd_init)
-
     # Schema group: pgfast schema [subcommand]
     schema_parser = subparsers.add_parser("schema", help="Schema management commands")
     schema_subparsers = schema_parser.add_subparsers(
@@ -676,7 +683,11 @@ def create_parser() -> argparse.ArgumentParser:
     # schema create
     create_parser = schema_subparsers.add_parser(
         "create",
-        help="Create a new migration file pair",
+        help="Create a new migration file pair in specified module",
+    )
+    create_parser.add_argument(
+        "module",
+        help="Module directory (e.g., 'app/users' creates app/users/migrations/)",
     )
     create_parser.add_argument("name", help="Migration name")
     create_parser.add_argument(

@@ -195,18 +195,15 @@ class TestDatabaseManager:
             if admin_conn:
                 await admin_conn.close()
 
-    async def create_template_db(
-        self, template_name: str, migrations_dir: str = "db/migrations"
-    ) -> str:
+    async def create_template_db(self, template_name: str) -> str:
         """Create a template database with schema applied.
 
-        This creates a database, applies all migrations, and marks it as a template.
-        Template databases can be cloned much faster than creating and migrating
-        a new database.
+        This creates a database, applies all migrations from all configured
+        migration directories, and marks it as a template. Template databases
+        can be cloned much faster than creating and migrating a new database.
 
         Args:
             template_name: Name for the template database
-            migrations_dir: Directory containing migrations
 
         Returns:
             Template database name
@@ -221,7 +218,7 @@ class TestDatabaseManager:
 
         try:
             # Apply migrations to template
-            schema_manager = SchemaManager(pool, migrations_dir)
+            schema_manager = SchemaManager(pool, self.config)
             await schema_manager.schema_up()
 
             await close_pool(pool)
@@ -309,18 +306,46 @@ class TestDatabaseManager:
             if admin_conn:
                 await admin_conn.close()
 
+    def discover_fixtures(self) -> list[Path | str] | None:
+        """Discover all fixture files across multiple directories.
+
+        Returns:
+            List of fixture paths sorted by full path for deterministic ordering
+        """
+        all_fixtures = []
+
+        fixtures_dirs = self.config.discover_fixtures_dirs()
+
+        for fixtures_dir in fixtures_dirs:
+            if not fixtures_dir.exists():
+                continue
+
+            fixtures = sorted(fixtures_dir.glob("*.sql"))
+            all_fixtures.extend(fixtures)
+
+        # Sort by full path for deterministic ordering
+        return sorted(all_fixtures)
+
     async def load_fixtures(
-        self, pool: asyncpg.Pool, fixtures: list[Path | str]
+        self, pool: asyncpg.Pool, fixtures: list[Path | str] | None = None
     ) -> None:
         """Load SQL fixture files into the database.
 
         Args:
             pool: Connection pool to load fixtures into
-            fixtures: List of fixture file paths
+            fixtures: List of fixture file paths. If None, auto-discover from all
+                     configured fixture directories.
 
         Raises:
             TestDatabaseError: If fixture loading fails
         """
+        if fixtures is None:
+            fixtures = self.discover_fixtures()
+
+        if not fixtures:
+            logger.info("No fixtures to load")
+            return
+
         logger.info(f"Loading {len(fixtures)} fixture(s)")
 
         async with pool.acquire() as conn:
@@ -349,15 +374,12 @@ class TestDatabaseManager:
         logger.info("Fixtures loaded successfully")
 
 
-async def create_test_pool_with_schema(
-    config: DatabaseConfig,
-    migrations_dir: str = "db/migrations",
-) -> asyncpg.Pool:
+async def create_test_pool_with_schema(config: DatabaseConfig) -> asyncpg.Pool:
     """Create test database with schema applied.
 
     This is a convenience function that:
     1. Creates an isolated test database
-    2. Applies all migrations
+    2. Applies all migrations from all configured directories
     3. Returns the connection pool
 
     Example:
@@ -367,7 +389,6 @@ async def create_test_pool_with_schema(
 
     Args:
         config: Database configuration
-        migrations_dir: Directory containing migrations
 
     Returns:
         Connection pool to test database with schema applied
@@ -380,7 +401,7 @@ async def create_test_pool_with_schema(
 
     try:
         # Apply migrations
-        schema_manager = SchemaManager(pool, migrations_dir)
+        schema_manager = SchemaManager(pool, config)
         await schema_manager.schema_up()
         return pool
     except Exception as _e:
