@@ -1,13 +1,11 @@
 """Database configuration."""
 
-from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from pgfast.exceptions import ConfigurationError
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-@dataclass
-class DatabaseConfig:
+class DatabaseConfig(BaseModel):
     """Database configuration.
 
     Args:
@@ -20,46 +18,95 @@ class DatabaseConfig:
         fixtures_dir: Directory for test fixtures (default: "db/fixtures")
 
     Raises:
-        ConfigurationError: If configuration is invalid
+        ValidationError: If configuration is invalid
     """
 
     url: str
-    min_connections: int = 5
-    max_connections: int = 20
-    timeout: float = 10.0
-    command_timeout: float = 60.0
+    min_connections: int = Field(default=5, gt=0)
+    max_connections: int = Field(default=20, gt=0)
+    timeout: float = Field(default=10.0, gt=0)
+    command_timeout: float = Field(default=60.0, gt=0)
     migrations_dir: str = "db/migrations"
     fixtures_dir: str = "db/fixtures"
 
-    def __post_init__(self):
-        """Validate configuration after initialization."""
-        self._validate_url()
-        self._validate_pool_settings()
+    model_config = {"frozen": True}  # Configs shouldn't change after creation
 
-    def _validate_url(self) -> None:
-        """Validate PostgreSQL URL format."""
+    @field_validator("max_connections")
+    @classmethod
+    def validate_max_connections(cls, v: int, info) -> int:
+        """Validate max_connections is >= min_connections."""
+        # Note: min_connections is validated first due to field order
+        min_conn = info.data.get("min_connections", 5)
+        if v < min_conn:
+            raise ValueError(
+                f"max_connections ({v}) must be >= min_connections ({min_conn})"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def validate_and_normalize_url(self) -> "DatabaseConfig":
+        """Validate and normalize PostgreSQL URL with defaults.
+
+        Applies PostgreSQL default values for missing components:
+        - Host: localhost
+        - Port: 5432
+        - User: postgres
+        - Database: same as username (or database name if provided alone)
+
+        Examples:
+            "dbname" → "postgresql://postgres@localhost:5432/dbname"
+            "localhost/dbname" → "postgresql://postgres@localhost:5432/dbname"
+            "postgres@localhost:5432/dbname" → "postgresql://postgres@localhost:5432/dbname"
+        """
         try:
-            parsed = urlparse(self.url)
+            url = self.url
+
+            # Handle case where scheme is missing
+            if not url.startswith(("postgresql://", "postgres://")):
+                # If contains "/", it has host info before the "/"
+                if "/" in url:
+                    url = f"postgresql://{url}"
+                else:
+                    # Just database name
+                    url = f"postgresql:///{url}"
+
+            parsed = urlparse(url)
+
+            # Validate scheme
             if parsed.scheme not in ("postgresql", "postgres"):
-                raise ConfigurationError(
+                raise ValueError(
                     f"Invalid database URL scheme: {parsed.scheme}. "
                     "Expected 'postgresql' or 'postgres'"
                 )
+
+            # Apply defaults (PostgreSQL-style)
+            scheme = "postgresql"  # Normalize to postgresql
+            username = parsed.username or "postgres"
+            password = parsed.password
+            hostname = parsed.hostname or "localhost"
+            port = parsed.port or 5432
+
+            # Database defaults to username if not specified, or if path is just "/"
+            database = (
+                parsed.path.lstrip("/")
+                if parsed.path and parsed.path != "/"
+                else username
+            )
+
+            # Reconstruct URL with all components
+            if password:
+                auth = f"{username}:{password}"
+            else:
+                auth = username
+
+            normalized_url = f"{scheme}://{auth}@{hostname}:{port}/{database}"
+
+            # Use object.__setattr__ since model is frozen
+            object.__setattr__(self, "url", normalized_url)
+
+            return self
+
+        except ValueError:
+            raise
         except Exception as e:
-            raise ConfigurationError(f"Invalid database URL: {self.url}") from e
-
-    def _validate_pool_settings(self) -> None:
-        """Validate connection pool settings."""
-        if self.min_connections <= 0:
-            raise ConfigurationError(
-                f"min_connections must be positive, got: {self.min_connections}"
-            )
-
-        if self.max_connections < self.min_connections:
-            raise ConfigurationError(
-                f"max_connections ({self.max_connections}) must be >= "
-                f"min_connections ({self.min_connections})"
-            )
-
-        if self.timeout <= 0:
-            raise ConfigurationError(f"timeout must be positive, got: {self.timeout}")
+            raise ValueError(f"Invalid database URL: {self.url}") from e

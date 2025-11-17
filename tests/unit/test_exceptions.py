@@ -1,8 +1,7 @@
 from pgfast.exceptions import (
-    PgfastError,
     ConnectionError,
+    PgfastError,
     SchemaError,
-    ConfigurationError,
 )
 
 
@@ -10,7 +9,6 @@ def test_base_exception_hierarchy():
     """PgfastError should be base for all pgfast exceptions."""
     assert issubclass(ConnectionError, PgfastError)
     assert issubclass(SchemaError, PgfastError)
-    assert issubclass(ConfigurationError, PgfastError)
 
 
 def test_exceptions_include_message():

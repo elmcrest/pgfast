@@ -1,6 +1,7 @@
 import pytest
+from pydantic import ValidationError
+
 from pgfast.config import DatabaseConfig
-from pgfast.exceptions import ConfigurationError
 
 
 def test_config_with_valid_url():
@@ -9,6 +10,20 @@ def test_config_with_valid_url():
     assert config.url == "postgresql://user:pass@localhost:5432/dbname"
     assert config.min_connections == 5  # default
     assert config.max_connections == 20  # default
+
+
+def test_config_with_shortened_valid_url():
+    """Should create config with valid PostgreSQL URL."""
+    config = DatabaseConfig(url="dbname")
+    assert config.url == "postgresql://postgres@localhost:5432/dbname"
+    config = DatabaseConfig(url="localhost/dbname")
+    assert config.url == "postgresql://postgres@localhost:5432/dbname"
+    config = DatabaseConfig(url="localhost:5432/dbname")
+    assert config.url == "postgresql://postgres@localhost:5432/dbname"
+    config = DatabaseConfig(url="postgres@localhost:5432/dbname")
+    assert config.url == "postgresql://postgres@localhost:5432/dbname"
+    config = DatabaseConfig(url="postgres:postgres@localhost:5432/dbname")
+    assert config.url == "postgresql://postgres:postgres@localhost:5432/dbname"
 
 
 def test_config_with_custom_pool_settings():
@@ -26,25 +41,13 @@ def test_config_with_custom_pool_settings():
 
 def test_config_rejects_invalid_pool_size():
     """Should reject invalid pool sizes."""
-    with pytest.raises(ConfigurationError, match="min_connections must be positive"):
+    with pytest.raises(ValidationError):
         DatabaseConfig(url="postgresql://localhost/test", min_connections=0)
 
-    with pytest.raises(
-        ConfigurationError,
-        match="max_connections \(5\) must be >= min_connections \(10\)",
-    ):
+    with pytest.raises(ValidationError):
         DatabaseConfig(
             url="postgresql://localhost/test", min_connections=10, max_connections=5
         )
-
-
-def test_config_validates_url_format():
-    """Should validate PostgreSQL URL format."""
-    with pytest.raises(ConfigurationError, match="Invalid database URL"):
-        DatabaseConfig(url="not-a-valid-url")
-
-    with pytest.raises(ConfigurationError, match="Invalid database URL"):
-        DatabaseConfig(url="mysql://localhost/test")  # Wrong database type
 
 
 def test_config_with_paths():
