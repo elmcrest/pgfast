@@ -477,30 +477,56 @@ def cmd_test_db_create(args: argparse.Namespace) -> None:
     asyncio.run(_run())
 
 
-def cmd_test_db_load_fixtures(args: argparse.Namespace) -> None:
-    """Load fixtures into test database."""
+def cmd_fixtures_load(args: argparse.Namespace) -> None:
+    """Load fixtures into database."""
 
     async def _run():
         config = get_config()
 
-        # Connect to specified database
-        parsed = urlparse(config.url)
-        test_url = parsed._replace(path=f"/{args.database}").geturl()
-        test_config = DatabaseConfig(
-            url=test_url,
-            min_connections=config.min_connections,
-            max_connections=config.max_connections,
-        )
+        # Determine which fixtures to load
+        if args.fixtures:
+            # Load specified fixtures
+            fixture_paths = [Path(f) for f in args.fixtures]
+        else:
+            # Load all fixtures from fixtures_dir
+            fixtures_dir = Path(config.fixtures_dir)
+            if not fixtures_dir.exists():
+                print(
+                    f"{RED}ERROR:{RESET} Fixtures directory not found: {fixtures_dir}"
+                )
+                sys.exit(1)
 
-        pool = await create_pool(test_config)
+            fixture_paths = sorted(fixtures_dir.glob("*.sql"))
+            if not fixture_paths:
+                print(f"{YELLOW}No fixture files found in {fixtures_dir}{RESET}")
+                return
+
+        # Determine target database
+        parsed = urlparse(config.url)
+        if args.database:
+            # Connect to specified database
+            target_url = parsed._replace(path=f"/{args.database}").geturl()
+            target_config = DatabaseConfig(
+                url=target_url,
+                min_connections=config.min_connections,
+                max_connections=config.max_connections,
+            )
+            target_db = args.database
+        else:
+            # Use DATABASE_URL as-is
+            target_config = config
+            target_db = parsed.path.lstrip("/")
+
+        pool = await create_pool(target_config)
 
         try:
             manager = TestDatabaseManager(config)
-            fixture_paths = [Path(f) for f in args.fixtures]
 
             await manager.load_fixtures(pool, fixture_paths)
 
-            print(f"\n{GREEN}✓ Loaded {len(args.fixtures)} fixture(s){RESET}")
+            print(
+                f"\n{GREEN}✓ Loaded {len(fixture_paths)} fixture(s) into {target_db}{RESET}"
+            )
         except PgfastError as e:
             print(f"{RED}ERROR:{RESET} {e}")
             sys.exit(1)
@@ -604,7 +630,7 @@ def cmd_test_db_cleanup(args: argparse.Namespace) -> None:
 
                     # Drop database using format() with %I for safe identifier escaping
                     query = await admin_conn.fetchval(
-                        "SELECT format('DROP DATABASE IF EXISTS %I', $1)", db_name
+                        "SELECT format('DROP DATABASE IF EXISTS %I', $1::text)", db_name
                     )
                     await admin_conn.execute(query)
                     print(f"{GREEN}✓{RESET} Dropped {db_name}")
@@ -716,6 +742,30 @@ def create_parser() -> argparse.ArgumentParser:
     )
     verify_parser.set_defaults(func=cmd_schema_verify)
 
+    # Fixtures group: pgfast fixtures [subcommand]
+    fixtures_parser = subparsers.add_parser(
+        "fixtures", help="Fixture management commands"
+    )
+    fixtures_subparsers = fixtures_parser.add_subparsers(
+        dest="fixtures_command", required=True, help="Fixtures command"
+    )
+
+    # fixtures load
+    fixtures_load_parser = fixtures_subparsers.add_parser(
+        "load", help="Load fixtures into database"
+    )
+    fixtures_load_parser.add_argument(
+        "fixtures",
+        nargs="*",
+        help="Fixture files to load (defaults to all *.sql files in fixtures_dir)",
+    )
+    fixtures_load_parser.add_argument(
+        "--database",
+        "-d",
+        help="Target database name (defaults to DATABASE_URL database)",
+    )
+    fixtures_load_parser.set_defaults(func=cmd_fixtures_load)
+
     # Test DB group: pgfast test-db [subcommand]
     test_db_parser = subparsers.add_parser("test-db", help="Test database commands")
     test_db_subparsers = test_db_parser.add_subparsers(
@@ -729,16 +779,6 @@ def create_parser() -> argparse.ArgumentParser:
     test_create_parser.add_argument("--name", "-n", help="Database name")
     test_create_parser.add_argument("--template", "-t", help="Template to clone from")
     test_create_parser.set_defaults(func=cmd_test_db_create)
-
-    # test-db load-fixtures
-    load_fixtures_parser = test_db_subparsers.add_parser(
-        "load-fixtures", help="Load fixtures into test database"
-    )
-    load_fixtures_parser.add_argument("database", help="Database name")
-    load_fixtures_parser.add_argument(
-        "fixtures", nargs="+", help="Fixture files to load"
-    )
-    load_fixtures_parser.set_defaults(func=cmd_test_db_load_fixtures)
 
     # test-db list
     list_parser = test_db_subparsers.add_parser(
