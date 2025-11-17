@@ -306,12 +306,59 @@ class TestDatabaseManager:
             if admin_conn:
                 await admin_conn.close()
 
-    def discover_fixtures(self) -> list[Path | str] | None:
+    def _sort_fixtures_by_dependencies(self, fixtures: list) -> list[Path]:
+        """Sort fixtures by migration dependency order.
+
+        Args:
+            fixtures: List of Fixture objects
+
+        Returns:
+            List of fixture paths sorted by migration dependency order
+        """
+        from pgfast.fixtures import Fixture
+
+        # Get migration dependency graph
+        schema_manager = SchemaManager(
+            pool=None,  # type: ignore - not needed for discovery
+            config=self.config,
+        )
+        all_migrations = schema_manager._discover_migrations()
+        migration_map = {m.version: m for m in all_migrations}
+
+        # Sort fixtures by their corresponding migration dependencies
+        # Build a version -> fixture mapping
+        fixture_map: dict[int, Fixture] = {}
+        for fixture in fixtures:
+            fixture_map[fixture.version] = fixture
+
+        # Get only migrations that have corresponding fixtures
+        migrations_with_fixtures = [
+            migration_map[v] for v in fixture_map.keys() if v in migration_map
+        ]
+
+        if not migrations_with_fixtures:
+            # No matching migrations found, return fixtures sorted by version
+            return [f.path for f in sorted(fixtures, key=lambda f: f.version)]
+
+        # Apply topological sort to migrations
+        sorted_migrations = schema_manager._topological_sort(migrations_with_fixtures)
+
+        # Return fixture paths in migration dependency order
+        result = []
+        for migration in sorted_migrations:
+            if migration.version in fixture_map:
+                result.append(fixture_map[migration.version].path)
+
+        return result
+
+    def discover_fixtures(self) -> list[Path]:
         """Discover all fixture files across multiple directories.
 
         Returns:
-            List of fixture paths sorted by full path for deterministic ordering
+            List of fixture paths sorted by migration dependency order
         """
+        from pgfast.fixtures import Fixture
+
         all_fixtures = []
 
         fixtures_dirs = self.config.discover_fixtures_dirs()
@@ -320,16 +367,25 @@ class TestDatabaseManager:
             if not fixtures_dir.exists():
                 continue
 
-            fixtures = sorted(fixtures_dir.glob("*.sql"))
-            all_fixtures.extend(fixtures)
+            # Only include files matching the fixture naming convention
+            for sql_file in fixtures_dir.glob("*.sql"):
+                fixture = Fixture.from_path(sql_file)
+                if fixture:
+                    all_fixtures.append(fixture)
 
-        # Sort by full path for deterministic ordering
-        return sorted(all_fixtures)
+        if not all_fixtures:
+            return []
+
+        # Sort fixtures by migration dependency order
+        return self._sort_fixtures_by_dependencies(all_fixtures)
 
     async def load_fixtures(
         self, pool: asyncpg.Pool, fixtures: list[Path | str] | None = None
     ) -> None:
         """Load SQL fixture files into the database.
+
+        Fixtures are loaded in migration dependency order to ensure proper
+        referential integrity.
 
         Args:
             pool: Connection pool to load fixtures into
@@ -339,19 +395,50 @@ class TestDatabaseManager:
         Raises:
             TestDatabaseError: If fixture loading fails
         """
-        if fixtures is None:
-            fixtures = self.discover_fixtures()
+        from pgfast.fixtures import Fixture
 
-        if not fixtures:
+        # Get fixture paths sorted by dependencies
+        if fixtures is None:
+            # Auto-discover
+            fixture_paths = self.discover_fixtures()
+        else:
+            # Parse explicit paths to Fixture objects for sorting
+            fixture_objs = []
+            for fixture_path in fixtures:
+                path = Path(fixture_path)
+                fixture = Fixture.from_path(path)
+                if fixture:
+                    fixture_objs.append(fixture)
+                else:
+                    # Not a versioned fixture, just add path as-is
+                    # (backward compatibility for non-versioned fixtures)
+                    logger.warning(
+                        f"Fixture {path} doesn't follow naming convention, "
+                        "loading without dependency ordering"
+                    )
+
+            # Sort by dependencies if we have versioned fixtures
+            if fixture_objs:
+                fixture_paths = self._sort_fixtures_by_dependencies(fixture_objs)
+                # Add any non-versioned fixtures at the end
+                non_versioned = [
+                    Path(f)
+                    for f in fixtures
+                    if not Fixture.from_path(Path(f)) and Path(f).suffix == ".sql"
+                ]
+                fixture_paths.extend(non_versioned)
+            else:
+                # All non-versioned, use as-is
+                fixture_paths = [Path(f) for f in fixtures]
+
+        if not fixture_paths:
             logger.info("No fixtures to load")
             return
 
-        logger.info(f"Loading {len(fixtures)} fixture(s)")
+        logger.info(f"Loading {len(fixture_paths)} fixture(s)")
 
         async with pool.acquire() as conn:
-            for fixture in fixtures:
-                fixture_path = Path(fixture)
-
+            for fixture_path in fixture_paths:
                 if not fixture_path.exists():
                     raise TestDatabaseError(
                         f"Fixture file does not exist: {fixture_path}"
@@ -404,7 +491,7 @@ async def create_test_pool_with_schema(config: DatabaseConfig) -> asyncpg.Pool:
         schema_manager = SchemaManager(pool, config)
         await schema_manager.schema_up()
         return pool
-    except Exception as _e:
+    except Exception:
         # Clean up on failure
         try:
             await manager.cleanup_test_db(pool)

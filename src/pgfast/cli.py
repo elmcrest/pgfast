@@ -482,6 +482,69 @@ def cmd_test_db_create(args: argparse.Namespace) -> None:
     asyncio.run(_run())
 
 
+def cmd_fixtures_create(args: argparse.Namespace) -> None:
+    """Create fixture files for migrations without fixtures."""
+
+    try:
+        config = get_config()
+
+        # Create manager to discover migrations
+        manager = SchemaManager(
+            pool=None,  # type: ignore
+            config=config,
+        )
+
+        all_migrations = manager._discover_migrations()
+
+        if not all_migrations:
+            print(f"{YELLOW}No migrations found{RESET}")
+            return
+
+        # For each migration, check if fixture exists
+        created = []
+        skipped = []
+
+        for migration in all_migrations:
+            # Determine fixtures directory (sibling to migration directory)
+            fixtures_dir = migration.source_dir.parent / "fixtures"
+
+            # Check if fixture already exists
+            fixture_name = f"{migration.version}_{migration.name}_fixture.sql"
+            fixture_path = fixtures_dir / fixture_name
+
+            if fixture_path.exists():
+                skipped.append(fixture_path)
+                continue
+
+            # Create fixtures directory if needed
+            fixtures_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create empty fixture file with template
+            template = f"""-- Fixture for migration {migration.version}: {migration.name}
+-- This fixture is loaded in migration dependency order
+
+-- Add your test data here
+"""
+            fixture_path.write_text(template)
+            created.append(fixture_path)
+
+        # Report results
+        if created:
+            print(f"\n{GREEN}✓ Created {len(created)} fixture file(s):{RESET}")
+            for path in created:
+                print(f"  {path}")
+
+        if skipped:
+            print(f"\n{DIM}Skipped {len(skipped)} existing fixture(s){RESET}")
+
+        if not created and not skipped:
+            print(f"{YELLOW}No fixture files to create{RESET}")
+
+    except PgfastError as e:
+        print(f"{RED}ERROR:{RESET} {e}")
+        sys.exit(1)
+
+
 def cmd_fixtures_load(args: argparse.Namespace) -> None:
     """Load fixtures into database."""
 
@@ -761,14 +824,20 @@ def create_parser() -> argparse.ArgumentParser:
         dest="fixtures_command", required=True, help="Fixtures command"
     )
 
+    # fixtures create
+    fixtures_create_parser = fixtures_subparsers.add_parser(
+        "create", help="Create fixture files for migrations without fixtures"
+    )
+    fixtures_create_parser.set_defaults(func=cmd_fixtures_create)
+
     # fixtures load
     fixtures_load_parser = fixtures_subparsers.add_parser(
-        "load", help="Load fixtures into database"
+        "load", help="Load fixtures into database (in migration dependency order)"
     )
     fixtures_load_parser.add_argument(
         "fixtures",
         nargs="*",
-        help="Fixture files to load (defaults to all *.sql files in fixtures_dir)",
+        help="Fixture files to load (defaults to auto-discover all versioned fixtures)",
     )
     fixtures_load_parser.add_argument(
         "--database",
