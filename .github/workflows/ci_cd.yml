@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     name: Test pgfast
+    environment: prod
     runs-on: ubuntu-latest
     services:
       postgres:
