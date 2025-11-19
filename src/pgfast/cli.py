@@ -12,7 +12,7 @@ from pgfast.config import DatabaseConfig
 from pgfast.connection import close_pool, create_pool
 from pgfast.exceptions import MigrationError, PgfastError
 from pgfast.schema import SchemaManager
-from pgfast.testing import TestDatabaseManager, _pool_db_names
+from pgfast.testing import DatabaseTestManager, _pool_db_names
 
 # ANSI color codes
 RED = "\033[31m"
@@ -456,7 +456,7 @@ def cmd_test_db_create(args: argparse.Namespace) -> None:
 
     async def _run():
         config = get_config()
-        manager = TestDatabaseManager(config, template_db=args.template)
+        manager = DatabaseTestManager(config, template_db=args.template)
 
         pool = await manager.create_test_db(db_name=args.name)
         db_name = _pool_db_names.get(id(pool), args.name)
@@ -602,7 +602,7 @@ def cmd_fixtures_load(args: argparse.Namespace) -> None:
         pool = await create_pool(target_config)
 
         try:
-            manager = TestDatabaseManager(config)
+            manager = DatabaseTestManager(config)
 
             await manager.load_fixtures(pool, fixture_paths)
 

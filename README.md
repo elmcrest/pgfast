@@ -180,6 +180,50 @@ pytest -n auto      # Run tests in parallel (recommended)
 
 The test infrastructure supports parallel execution out of the box. Each test gets an isolated database, so tests can run concurrently without conflicts.
 
+### Advanced Testing
+
+#### Selective Fixture Loading
+
+Instead of loading all fixtures with `db_with_fixtures`, you can load specific fixtures using the `fixture_loader` fixture:
+
+```python
+async def test_specific_feature(isolated_db, fixture_loader):
+    # Load only the 'users' and 'products' fixtures
+    # This will automatically load them in dependency order
+    await fixture_loader(["users", "products"])
+    
+    async with isolated_db.acquire() as conn:
+        # ...
+```
+
+#### Fixture Reusability
+
+Fixtures are defined as SQL files following the naming convention `{version}_{name}_fixture.sql`. pgfast automatically discovers fixtures across multiple directories (e.g., `db/fixtures/`, or any directory matching `**/fixtures` pattern).
+
+- **Auto-Discovery**: Fixtures are discovered across multiple directories automatically. You can have fixtures in `db/fixtures/`, `module_a/fixtures/`, etc.
+- **Version Matching**: The version number MUST match a corresponding migration version.
+- **Dependency Order**: Fixtures are loaded in the same order as their corresponding migrations.
+- **Reusability**: All discovered fixtures are available globally and can be used in any test via `fixture_loader` or `db_with_fixtures`.
+
+#### Multiple Databases
+
+Need to test cross-database interactions? Use `db_pool_factory`:
+
+```python
+async def test_multi_db(db_pool_factory):
+    # Create two isolated databases
+    pool1 = await db_pool_factory()
+    pool2 = await db_pool_factory()
+    
+    try:
+        # Test interaction between databases
+        pass
+    finally:
+        # Cleanup is handled automatically, but you can be explicit
+        await db_pool_factory.cleanup(pool1)
+        await db_pool_factory.cleanup(pool2)
+```
+
 ## Configuration
 
 ```python

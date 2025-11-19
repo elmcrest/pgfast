@@ -16,7 +16,7 @@ from pgfast.exceptions import (
 from pgfast.fastapi import create_lifespan, get_db_pool
 from pgfast.schema import SchemaManager
 from pgfast.testing import (
-    TestDatabaseManager,
+    DatabaseTestManager,
     cleanup_test_pool,
     create_test_pool_with_schema,
 )
@@ -33,7 +33,7 @@ __all__ = [
     "create_lifespan",
     "get_db_pool",
     "SchemaManager",
-    "TestDatabaseManager",
+    "DatabaseTestManager",
     "create_test_pool_with_schema",
     "cleanup_test_pool",
 ]

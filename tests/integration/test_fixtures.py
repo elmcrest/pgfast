@@ -3,7 +3,7 @@
 import pytest
 
 from pgfast.fixtures import Fixture
-from pgfast.testing import TestDatabaseManager
+from pgfast.testing import DatabaseTestManager
 
 
 @pytest.fixture
@@ -138,8 +138,8 @@ class TestFixtureDependencyLoading:
         schema_manager = SchemaManager(isolated_db, config)
         await schema_manager.schema_up()
 
-        # Load fixtures using TestDatabaseManager
-        manager = TestDatabaseManager(config)
+        # Load fixtures using DatabaseTestManager
+        manager = DatabaseTestManager(config)
         await manager.load_fixtures(isolated_db)
 
         # Verify data was loaded correctly
@@ -174,7 +174,7 @@ class TestFixtureDependencyLoading:
         await schema_manager.schema_up()
 
         # Auto-discover and load fixtures
-        manager = TestDatabaseManager(config)
+        manager = DatabaseTestManager(config)
         discovered = manager.discover_fixtures()
 
         # Should find both fixtures
@@ -208,7 +208,7 @@ class TestFixtureDependencyLoading:
         await schema_manager.schema_up()
 
         # Load fixtures in reverse order (should be auto-sorted)
-        manager = TestDatabaseManager(config)
+        manager = DatabaseTestManager(config)
         fixture_b, fixture_a = fixtures_with_versions  # Reversed!
 
         await manager.load_fixtures(isolated_db, [fixture_b, fixture_a])
@@ -220,3 +220,315 @@ class TestFixtureDependencyLoading:
 
             posts = await conn.fetch("SELECT COUNT(*) FROM posts")
             assert posts[0]["count"] == 3
+
+
+@pytest.mark.asyncio
+class TestFixtureLoaderPytestFixture:
+    """Tests for the fixture_loader pytest fixture."""
+
+    @pytest.fixture
+    async def multi_fixture_setup(self, tmp_path):
+        """Create migrations and fixtures with complex dependencies."""
+        # Create migration and fixture directories
+        migrations_dir = tmp_path / "db" / "migrations"
+        fixtures_dir = tmp_path / "db" / "fixtures"
+        migrations_dir.mkdir(parents=True)
+        fixtures_dir.mkdir(parents=True)
+
+        # Migration 1: users (no dependencies)
+        (migrations_dir / "20250101000000_create_users_up.sql").write_text(
+            "CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT);"
+        )
+        (migrations_dir / "20250101000000_create_users_down.sql").write_text(
+            "DROP TABLE users;"
+        )
+
+        # Migration 2: products (no dependencies)
+        (migrations_dir / "20250102000000_create_products_up.sql").write_text(
+            "CREATE TABLE products (id SERIAL PRIMARY KEY, name TEXT, price DECIMAL);"
+        )
+        (migrations_dir / "20250102000000_create_products_down.sql").write_text(
+            "DROP TABLE products;"
+        )
+
+        # Migration 3: orders (depends on users and products)
+        (migrations_dir / "20250103000000_create_orders_up.sql").write_text(
+            "-- depends_on: 20250101000000, 20250102000000\n"
+            "CREATE TABLE orders ("
+            "id SERIAL PRIMARY KEY, "
+            "user_id INTEGER REFERENCES users(id), "
+            "product_id INTEGER REFERENCES products(id)"
+            ");"
+        )
+        (migrations_dir / "20250103000000_create_orders_down.sql").write_text(
+            "DROP TABLE orders;"
+        )
+
+        # Fixtures matching each migration
+        (fixtures_dir / "20250101000000_create_users_fixture.sql").write_text(
+            "INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob');"
+        )
+        (fixtures_dir / "20250102000000_create_products_fixture.sql").write_text(
+            "INSERT INTO products (id, name, price) VALUES "
+            "(1, 'Widget', 9.99), (2, 'Gadget', 19.99);"
+        )
+        (fixtures_dir / "20250103000000_create_orders_fixture.sql").write_text(
+            "INSERT INTO orders (user_id, product_id) VALUES (1, 1), (1, 2), (2, 1);"
+        )
+
+        return {
+            "migrations_dir": migrations_dir,
+            "fixtures_dir": fixtures_dir,
+            "tmp_path": tmp_path,
+        }
+
+    async def test_fixture_loader_selective_loading(
+        self, isolated_db, db_config, multi_fixture_setup
+    ):
+        """Test loading only specific fixtures by name."""
+        from pgfast.config import DatabaseConfig
+        from pgfast.schema import SchemaManager
+
+        # Configure with our test directories
+        config = DatabaseConfig(
+            url=db_config.url,
+            migrations_dirs=[str(multi_fixture_setup["migrations_dir"])],
+            fixtures_dirs=[str(multi_fixture_setup["fixtures_dir"])],
+        )
+
+        # Apply all migrations
+        schema_manager = SchemaManager(isolated_db, config)
+        await schema_manager.schema_up()
+
+        # Get the fixture_loader
+        from pgfast.testing import DatabaseTestManager
+
+        manager = DatabaseTestManager(config)
+
+        async def load(names: list[str]) -> None:
+            all_fixtures = manager.discover_fixtures()
+            to_load = []
+            found_names = set()
+
+            for path in all_fixtures:
+                fixture = Fixture.from_path(path)
+                if fixture and fixture.name in names:
+                    to_load.append(path)
+                    found_names.add(fixture.name)
+
+            missing = set(names) - found_names
+            if missing:
+                raise ValueError(f"Fixtures not found: {', '.join(missing)}")
+
+            await manager.load_fixtures(isolated_db, to_load)
+
+        # Load only 'create_users' and 'create_products' fixtures
+        await load(["create_users", "create_products"])
+
+        # Verify data
+        async with isolated_db.acquire() as conn:
+            # Users should be loaded
+            user_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+            assert user_count == 2
+
+            # Products should be loaded
+            product_count = await conn.fetchval("SELECT COUNT(*) FROM products")
+            assert product_count == 2
+
+            # Orders should NOT be loaded (not in the list)
+            order_count = await conn.fetchval("SELECT COUNT(*) FROM orders")
+            assert order_count == 0
+
+    async def test_fixture_loader_preserves_dependency_order(
+        self, isolated_db, db_config, multi_fixture_setup
+    ):
+        """Test that fixture_loader preserves dependency order."""
+        from pgfast.config import DatabaseConfig
+        from pgfast.schema import SchemaManager
+        from pgfast.testing import DatabaseTestManager
+
+        config = DatabaseConfig(
+            url=db_config.url,
+            migrations_dirs=[str(multi_fixture_setup["migrations_dir"])],
+            fixtures_dirs=[str(multi_fixture_setup["fixtures_dir"])],
+        )
+
+        # Apply migrations
+        schema_manager = SchemaManager(isolated_db, config)
+        await schema_manager.schema_up()
+
+        # Get fixture_loader implementation
+        manager = DatabaseTestManager(config)
+
+        async def load(names: list[str]) -> None:
+            all_fixtures = manager.discover_fixtures()
+            to_load = []
+            found_names = set()
+
+            for path in all_fixtures:
+                fixture = Fixture.from_path(path)
+                if fixture and fixture.name in names:
+                    to_load.append(path)
+                    found_names.add(fixture.name)
+
+            missing = set(names) - found_names
+            if missing:
+                raise ValueError(f"Fixtures not found: {', '.join(missing)}")
+
+            await manager.load_fixtures(isolated_db, to_load)
+
+        # Request fixtures in reverse order - should still work due to dependency sorting
+        await load(["create_orders", "create_products", "create_users"])
+
+        # If dependency order wasn't preserved, this would fail with FK constraint errors
+        async with isolated_db.acquire() as conn:
+            user_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+            product_count = await conn.fetchval("SELECT COUNT(*) FROM products")
+            order_count = await conn.fetchval("SELECT COUNT(*) FROM orders")
+
+            assert user_count == 2
+            assert product_count == 2
+            assert order_count == 3
+
+    async def test_fixture_loader_missing_fixture_error(
+        self, isolated_db, db_config, multi_fixture_setup
+    ):
+        """Test that fixture_loader raises error for missing fixtures."""
+        from pgfast.config import DatabaseConfig
+        from pgfast.schema import SchemaManager
+        from pgfast.testing import DatabaseTestManager
+
+        config = DatabaseConfig(
+            url=db_config.url,
+            migrations_dirs=[str(multi_fixture_setup["migrations_dir"])],
+            fixtures_dirs=[str(multi_fixture_setup["fixtures_dir"])],
+        )
+
+        # Apply migrations
+        schema_manager = SchemaManager(isolated_db, config)
+        await schema_manager.schema_up()
+
+        # Get fixture_loader implementation
+        manager = DatabaseTestManager(config)
+
+        async def load(names: list[str]) -> None:
+            all_fixtures = manager.discover_fixtures()
+            to_load = []
+            found_names = set()
+
+            for path in all_fixtures:
+                fixture = Fixture.from_path(path)
+                if fixture and fixture.name in names:
+                    to_load.append(path)
+                    found_names.add(fixture.name)
+
+            missing = set(names) - found_names
+            if missing:
+                raise ValueError(f"Fixtures not found: {', '.join(missing)}")
+
+            await manager.load_fixtures(isolated_db, to_load)
+
+        # Request non-existent fixture
+        with pytest.raises(ValueError, match="Fixtures not found: nonexistent"):
+            await load(["create_users", "nonexistent"])
+
+    async def test_fixture_loader_empty_list(
+        self, isolated_db, db_config, multi_fixture_setup
+    ):
+        """Test that fixture_loader handles empty list gracefully."""
+        from pgfast.config import DatabaseConfig
+        from pgfast.schema import SchemaManager
+        from pgfast.testing import DatabaseTestManager
+
+        config = DatabaseConfig(
+            url=db_config.url,
+            migrations_dirs=[str(multi_fixture_setup["migrations_dir"])],
+            fixtures_dirs=[str(multi_fixture_setup["fixtures_dir"])],
+        )
+
+        # Apply migrations
+        schema_manager = SchemaManager(isolated_db, config)
+        await schema_manager.schema_up()
+
+        # Get fixture_loader implementation
+        manager = DatabaseTestManager(config)
+
+        async def load(names: list[str]) -> None:
+            all_fixtures = manager.discover_fixtures()
+            to_load = []
+            found_names = set()
+
+            for path in all_fixtures:
+                fixture = Fixture.from_path(path)
+                if fixture and fixture.name in names:
+                    to_load.append(path)
+                    found_names.add(fixture.name)
+
+            missing = set(names) - found_names
+            if missing:
+                raise ValueError(f"Fixtures not found: {', '.join(missing)}")
+
+            await manager.load_fixtures(isolated_db, to_load)
+
+        # Load empty list - should succeed without errors
+        await load([])
+
+        # Verify no data was loaded
+        async with isolated_db.acquire() as conn:
+            user_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+            product_count = await conn.fetchval("SELECT COUNT(*) FROM products")
+            order_count = await conn.fetchval("SELECT COUNT(*) FROM orders")
+
+            assert user_count == 0
+            assert product_count == 0
+            assert order_count == 0
+
+    async def test_fixture_loader_single_fixture(
+        self, isolated_db, db_config, multi_fixture_setup
+    ):
+        """Test loading a single fixture."""
+        from pgfast.config import DatabaseConfig
+        from pgfast.schema import SchemaManager
+        from pgfast.testing import DatabaseTestManager
+
+        config = DatabaseConfig(
+            url=db_config.url,
+            migrations_dirs=[str(multi_fixture_setup["migrations_dir"])],
+            fixtures_dirs=[str(multi_fixture_setup["fixtures_dir"])],
+        )
+
+        # Apply migrations
+        schema_manager = SchemaManager(isolated_db, config)
+        await schema_manager.schema_up()
+
+        # Get fixture_loader implementation
+        manager = DatabaseTestManager(config)
+
+        async def load(names: list[str]) -> None:
+            all_fixtures = manager.discover_fixtures()
+            to_load = []
+            found_names = set()
+
+            for path in all_fixtures:
+                fixture = Fixture.from_path(path)
+                if fixture and fixture.name in names:
+                    to_load.append(path)
+                    found_names.add(fixture.name)
+
+            missing = set(names) - found_names
+            if missing:
+                raise ValueError(f"Fixtures not found: {', '.join(missing)}")
+
+            await manager.load_fixtures(isolated_db, to_load)
+
+        # Load only products
+        await load(["create_products"])
+
+        async with isolated_db.acquire() as conn:
+            user_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+            product_count = await conn.fetchval("SELECT COUNT(*) FROM products")
+            order_count = await conn.fetchval("SELECT COUNT(*) FROM orders")
+
+            assert user_count == 0
+            assert product_count == 2
+            assert order_count == 0

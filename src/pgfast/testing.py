@@ -24,14 +24,14 @@ logger = logging.getLogger(__name__)
 _pool_db_names: dict[int, str] = {}
 
 
-class TestDatabaseManager:
+class DatabaseTestManager:
     """Manages test database lifecycle.
 
     This manager creates isolated PostgreSQL databases for testing,
     optionally using a template database for faster setup.
 
     Example:
-        manager = TestDatabaseManager(config)
+        manager = DatabaseTestManager(config)
         pool = await manager.create_test_db()
         # Run tests...
         await manager.cleanup_test_db(pool)
@@ -142,7 +142,7 @@ class TestDatabaseManager:
         if not db_name:
             raise TestDatabaseError(
                 "Pool not found in database registry. "
-                "Was it created with TestDatabaseManager?"
+                "Was it created with DatabaseTestManager?"
             )
 
         logger.info(f"Cleaning up test database: {db_name}")
@@ -483,7 +483,7 @@ async def create_test_pool_with_schema(config: DatabaseConfig) -> asyncpg.Pool:
     Raises:
         TestDatabaseError: If creation fails
     """
-    manager = TestDatabaseManager(config)
+    manager = DatabaseTestManager(config)
     pool = await manager.create_test_db()
 
     try:
@@ -512,5 +512,5 @@ async def cleanup_test_pool(pool: asyncpg.Pool, config: DatabaseConfig) -> None:
     Raises:
         TestDatabaseError: If cleanup fails
     """
-    manager = TestDatabaseManager(config)
+    manager = DatabaseTestManager(config)
     await manager.cleanup_test_db(pool)
