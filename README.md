@@ -46,17 +46,14 @@ async def get_users(pool: asyncpg.Pool = Depends(get_db_pool)):
 ### 2. Create and run migrations
 
 ```bash
-# Initialize directories
-pgfast init
-
 # Create a migration
-pgfast schema create add_users_table
+pgfast schema create your/module add_users_table
 
-# Edit the generated SQL files in db/migrations/
+# Edit the generated SQL files in your/module/migrations/
 # Then preview and apply migrations
 export DATABASE_URL="postgresql://localhost/mydb"
 pgfast schema up --dry-run  # Preview first
-pgfast schema up             # Apply migrations
+pgfast schema up            # Apply migrations
 ```
 
 ### 3. Write tests with isolated databases
@@ -103,26 +100,23 @@ async def test_user_creation(isolated_db):
 ### CLI Commands
 
 ```bash
-# Initialization
-pgfast init                           # Initialize directory structure
-
 # Migration Management
-pgfast schema create <name>           # Create migration files
-pgfast schema up                      # Apply pending migrations
-pgfast schema up --target <version>   # Migrate to specific version
-pgfast schema up --dry-run            # Preview migrations without applying
-pgfast schema up --force              # Skip checksum validation
-pgfast schema down --steps 1          # Rollback 1 migration
-pgfast schema down --target <version> # Rollback to specific version
-pgfast schema down --dry-run          # Preview rollback
-pgfast schema status                  # Show migration status
-pgfast schema deps                    # Show dependency graph
-pgfast schema verify                  # Verify migration checksums
+pgfast schema create <module_path> <name>    # Create migration files
+pgfast schema up                             # Apply pending migrations
+pgfast schema up --target <version>          # Migrate to specific version
+pgfast schema up --dry-run                   # Preview migrations without applying
+pgfast schema up --force                     # Skip checksum validation
+pgfast schema down --steps 1                 # Rollback 1 migration
+pgfast schema down --target <version>        # Rollback to specific version
+pgfast schema down --dry-run                 # Preview rollback
+pgfast schema status                         # Show migration status
+pgfast schema deps                           # Show dependency graph
+pgfast schema verify                         # Verify migration checksums
 
 # Test Database Management
-pgfast test-db create                 # Create test database
-pgfast test-db list                   # List test databases
-pgfast test-db cleanup                # Clean up test databases
+pgfast test-db create                        # Create test database
+pgfast test-db list                          # List test databases
+pgfast test-db cleanup                       # Clean up test databases
 ```
 
 ## Migration Features
