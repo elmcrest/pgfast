@@ -1,4 +1,9 @@
 # pgfast
+[![codecov](https://codecov.io/gh/elmcrest/pgfast/graph/badge.svg?token=dFtlfgtEQx)](https://codecov.io/gh/elmcrest/pgfast)
+![CI](https://github.com/elmcrest/pgfast/actions/workflows/ci_cd.yml/badge.svg)
+[![PyPI version](https://img.shields.io/pypi/v/pgfast)](https://pypi.org/project/pgfast/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pgfast)](https://pypi.org/project/pgfast/)
+[![License](https://img.shields.io/pypi/l/pgfast)](https://pypi.org/project/pgfast/)
 
 **Lightweight asyncpg integration for FastAPI. Raw SQL. Fast tests. Zero magic.**
 
@@ -18,7 +23,7 @@ pgfast gives you everything you need to build FastAPI applications with PostgreS
 pip install pgfast
 ```
 
-Requires Python 3.14+ and PostgreSQL.
+Requires Python 3.14+ and PostgreSQL (earlier versions should work, open a PR if you'd like to  add support).
 
 ## Quick Start
 
@@ -61,7 +66,7 @@ import pytest
 from pgfast.pytest import isolated_db
 
 async def test_user_creation(isolated_db):
-    """Each test gets a fresh databasefast and isolated."""
+    """Each test gets a fresh database fast and isolated."""
     async with isolated_db.acquire() as conn:
         await conn.execute("""
             INSERT INTO users (name, email)
@@ -90,7 +95,7 @@ async def test_user_creation(isolated_db):
 
 ### Test Database Management
 - Isolated test databases for every test
-- Template database cloning for 10-100x faster test setup
+- Template database cloning for ~10-100x faster test setup (*needs benchmarking)
 - Automatic cleanup
 - Fixture loading from SQL files
 - Pytest fixtures ready to use
