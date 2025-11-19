@@ -8,7 +8,7 @@ Or selectively:
 """
 
 import uuid
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator, Callable
 
 import asyncpg
 import pytest
@@ -191,6 +191,72 @@ async def fixture_loader(isolated_db, db_config):
     return load
 
 
+@pytest.fixture
+def test_client(isolated_db):
+    """Factory for creating FastAPI test clients with isolated database.
+
+    This fixture simplifies testing FastAPI endpoints by automatically
+    overriding the database pool dependency.
+
+    Usage in conftest.py:
+        from fastapi import FastAPI
+        from pgfast.pytest import test_client as base_test_client
+        from app import app, get_db_pool
+
+        @pytest.fixture
+        async def api_client(base_test_client):
+            async with base_test_client(app, get_db_pool) as client:
+                yield client
+
+    Then in tests:
+        async def test_endpoint(api_client):
+            response = await api_client.get("/todos")
+            assert response.status_code == 200
+
+    Args:
+        app: FastAPI application instance
+        pool_dependency: The dependency function to override (e.g., get_db_pool)
+        base_url: Base URL for the test client (default: "http://test")
+
+    Returns:
+        AsyncClient with pool dependency overridden to use isolated_db
+    """
+    try:
+        from httpx import ASGITransport, AsyncClient
+    except ImportError:
+        raise ImportError(
+            "httpx is required for test_client fixture. "
+            "Install it with: pip install httpx"
+        )
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _create_client(
+        app: Any,
+        pool_dependency: Callable[[], asyncpg.Pool],
+        base_url: str = "http://test",
+    ) -> AsyncGenerator[AsyncClient, None]:
+        """Create test client with dependency override."""
+        # Store original overrides
+        original_overrides = app.dependency_overrides.copy()
+
+        try:
+            # Override pool dependency to use isolated test database
+            app.dependency_overrides[pool_dependency] = lambda: isolated_db
+
+            # Create ASGI transport and test client
+            transport = ASGITransport(app=app)  # type: ignore
+            async with AsyncClient(transport=transport, base_url=base_url) as client:
+                yield client
+
+        finally:
+            # Restore original overrides
+            app.dependency_overrides = original_overrides
+
+    return _create_client
+
+
 __all__ = [
     "db_config",
     "template_db",
@@ -199,4 +265,5 @@ __all__ = [
     "db_pool_factory",
     "db_with_fixtures",
     "fixture_loader",
+    "test_client",
 ]

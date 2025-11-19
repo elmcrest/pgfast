@@ -570,7 +570,7 @@ async def test_topological_sort_complex_dependencies(manager, tmp_path):
     # Verify all tables exist
     async with manager.pool.acquire() as conn:
         result = await conn.fetchval(
-            "SELECT COUNT(*) FROM pg_tables WHERE tablename LIKE 'table_%'"
+            "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'table_%'"
         )
         assert result == 4
 

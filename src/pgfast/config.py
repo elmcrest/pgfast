@@ -20,6 +20,8 @@ class DatabaseConfig(BaseModel):
         migrations_search_pattern: Glob pattern for discovering migrations (default: "**/migrations")
         fixtures_search_pattern: Glob pattern for discovering fixtures (default: "**/fixtures")
         search_base_path: Base path for auto-discovery (default: current working directory)
+        exclude_patterns: List of directory names to exclude from auto-discovery
+            (default: ["examples", "node_modules", ".venv", "venv", ".git", ".pytest_cache", "__pycache__", "dist", "build"])
 
     Raises:
         ValidationError: If configuration is invalid
@@ -40,6 +42,17 @@ class DatabaseConfig(BaseModel):
     migrations_search_pattern: str = "**/migrations"
     fixtures_search_pattern: str = "**/fixtures"
     search_base_path: Path | None = None  # None = cwd()
+    exclude_patterns: list[str] = [
+        "examples",
+        "node_modules",
+        ".venv",
+        "venv",
+        ".git",
+        ".pytest_cache",
+        "__pycache__",
+        "dist",
+        "build",
+    ]  # Directories to exclude from auto-discovery
 
     model_config = {"frozen": True}  # Configs shouldn't change after creation
 
@@ -123,12 +136,28 @@ class DatabaseConfig(BaseModel):
         except Exception as e:
             raise ValueError(f"Invalid database URL: {self.url}") from e
 
+    def _is_excluded(self, path: Path) -> bool:
+        """Check if a path should be excluded based on exclude_patterns.
+
+        Args:
+            path: Path to check
+
+        Returns:
+            True if path should be excluded, False otherwise
+        """
+        parts = path.parts
+        for exclude in self.exclude_patterns:
+            if exclude in parts:
+                return True
+        return False
+
     def discover_migrations_dirs(self) -> list[Path]:
         """Discover migration directories.
 
         Returns list of discovered directories, or empty list if none found.
         If migrations_dirs is explicitly set, returns those paths.
         Otherwise, performs auto-discovery using the search pattern.
+        Excludes directories matching exclude_patterns.
         """
         if self.migrations_dirs is not None:
             # Explicit configuration - deduplicate paths
@@ -144,11 +173,11 @@ class DatabaseConfig(BaseModel):
         # Auto-discover
         base = self.search_base_path or Path.cwd()
         matches = sorted(base.glob(self.migrations_search_pattern))
-        # Deduplicate discovered paths
+        # Deduplicate discovered paths and filter excluded
         seen = set()
         result = []
         for p in matches:
-            if p.is_dir():
+            if p.is_dir() and not self._is_excluded(p):
                 resolved = p.resolve()
                 if resolved not in seen:
                     seen.add(resolved)
@@ -161,6 +190,7 @@ class DatabaseConfig(BaseModel):
         Returns list of discovered directories, or empty list if none found.
         If fixtures_dirs is explicitly set, returns those paths.
         Otherwise, performs auto-discovery using the search pattern.
+        Excludes directories matching exclude_patterns.
         """
         if self.fixtures_dirs is not None:
             # Explicit configuration - deduplicate paths
@@ -176,11 +206,11 @@ class DatabaseConfig(BaseModel):
         # Auto-discover
         base = self.search_base_path or Path.cwd()
         matches = sorted(base.glob(self.fixtures_search_pattern))
-        # Deduplicate discovered paths
+        # Deduplicate discovered paths and filter excluded
         seen = set()
         result = []
         for p in matches:
-            if p.is_dir():
+            if p.is_dir() and not self._is_excluded(p):
                 resolved = p.resolve()
                 if resolved not in seen:
                     seen.add(resolved)

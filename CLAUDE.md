@@ -105,7 +105,9 @@ pgfast test-db cleanup                # Clean up test databases
 **DatabaseConfig** (`config.py`)
 - Requires PostgreSQL URL with validation
 - Pool settings: min_connections, max_connections, timeout, command_timeout
-- Directory paths: migrations_dir, fixtures_dir
+- Directory paths: migrations_dirs, fixtures_dirs (optional - auto-discovers if not set)
+- Auto-discovery patterns: `**/migrations`, `**/fixtures` (configurable)
+- Exclude patterns: Directories excluded from auto-discovery (default: `examples`, `node_modules`, `.venv`, `venv`, `.git`, `.pytest_cache`, `__pycache__`, `dist`, `build`)
 - Validates URL scheme and pool settings on initialization
 
 **Environment Variables**

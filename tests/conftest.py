@@ -1,3 +1,4 @@
+import getpass
 import os
 
 import pytest
@@ -6,15 +7,27 @@ from pgfast import DatabaseConfig, SchemaManager
 
 # Import all standard fixtures from pgfast.pytest
 from pgfast.pytest import (
-    db_config as base_db_config,  # noqa: F401
+    db_config as base_db_config,
 )
 from pgfast.pytest import (
-    db_pool_factory,  # noqa: F401
-    db_with_fixtures,  # noqa: F401
-    isolated_db,  # noqa: F401
-    isolated_db_no_template,  # noqa: F401
-    template_db,  # noqa: F401
+    db_pool_factory,
+    db_with_fixtures,
+    fixture_loader,
+    isolated_db,
+    isolated_db_no_template,
+    template_db,
 )
+
+# Make fixtures available to all tests (avoid F401 warning)
+__all__ = [
+    "base_db_config",
+    "db_pool_factory",
+    "db_with_fixtures",
+    "fixture_loader",
+    "isolated_db",
+    "isolated_db_no_template",
+    "template_db",
+]
 
 
 @pytest.fixture(scope="session")
@@ -23,8 +36,12 @@ def db_config():
 
     Override the default configuration to use TEST_DATABASE_URL env var
     or default to localhost postgres database.
+
+    Auto-discovery will exclude "examples" directory by default.
+    Tests that need migrations will set up their own directories.
     """
-    url = os.getenv("TEST_DATABASE_URL", "postgresql://localhost/postgres")
+    default_url = f"postgresql://{getpass.getuser()}@localhost/postgres"
+    url = os.getenv("TEST_DATABASE_URL", default_url)
     return DatabaseConfig(
         url=url,
         min_connections=2,
@@ -41,9 +58,11 @@ async def manager(isolated_db, tmp_path):  # noqa: F811
     migrations_dir = tmp_path / "migrations"
     migrations_dir.mkdir()
 
+    default_url = f"postgresql://{getpass.getuser()}@localhost/postgres"
+    url = os.getenv("TEST_DATABASE_URL", default_url)
     # Create config with explicit migrations_dirs
     config = DatabaseConfig(
-        url=os.getenv("TEST_DATABASE_URL", "postgresql://localhost/postgres"),
+        url=url,
         migrations_dirs=[str(migrations_dir)],
     )
 
