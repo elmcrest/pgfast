@@ -4,6 +4,7 @@ Provides utilities for creating isolated test databases, loading fixtures,
 and managing test database lifecycle for fast, parallel testing.
 """
 
+import asyncio
 import logging
 import uuid
 from pathlib import Path
@@ -82,23 +83,83 @@ class DatabaseTestManager:
         try:
             admin_conn = await asyncpg.connect(admin_dsn, timeout=self.config.timeout)
 
-            # Create database from template
+            # Try to create database from template (fast path with retry)
             if self.template_db:
                 logger.info(f"Creating from template: {self.template_db}")
-                # Use format() with %I for safe identifier escaping
-                query = await admin_conn.fetchval(
-                    "SELECT format('CREATE DATABASE %I TEMPLATE %I', $1::text, $2::text)",
-                    db_name,
-                    self.template_db,
-                )
-                await admin_conn.execute(query)
+
+                # Retry configuration for template cloning with exponential backoff
+                # Most locks are very brief (< 50ms), so we use aggressive retries
+                max_retries = 10
+                base_delay = 0.01  # Start with 10ms
+                for attempt in range(max_retries):
+                    try:
+                        # Use format() with %I for safe identifier escaping
+                        query = await admin_conn.fetchval(
+                            "SELECT format('CREATE DATABASE %I TEMPLATE %I', $1::text, $2::text)",
+                            db_name,
+                            self.template_db,
+                        )
+                        await admin_conn.execute(query)
+                        # Success! Break out of retry loop
+                        break
+                    except asyncpg.PostgresError as e:
+                        # Check if template is locked (error code 55006 or message contains "being accessed")
+                        if "being accessed by other users" in str(e).lower():
+                            if attempt < max_retries - 1:
+                                # Exponential backoff: 10ms, 20ms, 40ms, 80ms, 160ms...
+                                # Capped at 100ms max delay
+                                delay = min(base_delay * (2**attempt), 0.1)
+                                logger.debug(
+                                    f"Template database locked, retrying in {delay:.3f}s (attempt {attempt + 1}/{max_retries})"
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            else:
+                                # All retries exhausted, fall back to slow path
+                                logger.warning(
+                                    f"Template database locked after {max_retries} attempts, falling back to no-template creation for {db_name}"
+                                )
+                                # Fallback: create without template and apply migrations
+                                query = await admin_conn.fetchval(
+                                    "SELECT format('CREATE DATABASE %I', $1::text)",
+                                    db_name,
+                                )
+                                await admin_conn.execute(query)
+
+                                # Create pool to new database
+                                test_dsn = parsed._replace(path=f"/{db_name}").geturl()
+                                test_config = DatabaseConfig(
+                                    url=test_dsn,
+                                    min_connections=self.config.min_connections,
+                                    max_connections=self.config.max_connections,
+                                    timeout=self.config.timeout,
+                                    command_timeout=self.config.command_timeout,
+                                )
+
+                                pool = await create_pool(test_config)
+
+                                # Apply migrations since we couldn't use template
+                                schema_manager = SchemaManager(pool, self.config)
+                                await schema_manager.schema_up()
+
+                                # Store db name in registry for cleanup (using id() as key)
+                                _pool_db_names[id(pool)] = db_name
+
+                                logger.info(
+                                    f"Test database created successfully (no-template fallback): {db_name}"
+                                )
+                                return pool
+                        else:
+                            # Re-raise if it's a different error
+                            raise
             else:
+                # No template specified, create empty database
                 query = await admin_conn.fetchval(
                     "SELECT format('CREATE DATABASE %I', $1::text)", db_name
                 )
                 await admin_conn.execute(query)
 
-            # Create pool to new database
+            # Create pool to new database (template creation succeeded)
             test_dsn = parsed._replace(path=f"/{db_name}").geturl()
             test_config = DatabaseConfig(
                 url=test_dsn,

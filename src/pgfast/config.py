@@ -56,6 +56,85 @@ class DatabaseConfig(BaseModel):
 
     model_config = {"frozen": True}  # Configs shouldn't change after creation
 
+    @classmethod
+    def from_env(
+        cls,
+        database_url_var: str = "DATABASE_URL",
+        require_url: bool = False,
+    ) -> "DatabaseConfig | None":
+        """Create DatabaseConfig from environment variables.
+
+        Priority order:
+        1. DATABASE_URL (or custom var name) if present
+        2. Build from POSTGRES_* fragments if DATABASE_URL absent
+        3. Return None if neither present (unless require_url=True, then raise)
+
+        Supported fragment variables:
+        - POSTGRES_HOST (default: localhost)
+        - POSTGRES_PORT (default: 5432)
+        - POSTGRES_USER (default: postgres)
+        - POSTGRES_PASSWORD (optional)
+        - POSTGRES_DB (required if using fragments)
+
+        Args:
+            database_url_var: Environment variable name for database URL (default: "DATABASE_URL")
+            require_url: If True, raise ValueError when no config found. If False, return None.
+
+        Returns:
+            DatabaseConfig instance or None if no configuration found
+
+        Raises:
+            ValueError: If require_url=True and no configuration available,
+                       or if using fragments but POSTGRES_DB is missing
+
+        Examples:
+            # From DATABASE_URL
+            DATABASE_URL="postgresql://localhost/mydb"
+            config = DatabaseConfig.from_env()
+
+            # From POSTGRES_* fragments
+            POSTGRES_HOST="localhost"
+            POSTGRES_DB="mydb"
+            config = DatabaseConfig.from_env()
+
+            # Custom URL variable name
+            MY_DB_URL="postgresql://localhost/mydb"
+            config = DatabaseConfig.from_env(database_url_var="MY_DB_URL")
+        """
+        import os
+
+        # Priority 1: Check for DATABASE_URL (or custom var)
+        url = os.getenv(database_url_var)
+        if url:
+            return cls(url=url)
+
+        # Priority 2: Try to build from POSTGRES_* fragments
+        postgres_host = os.getenv("POSTGRES_HOST", "localhost")
+        postgres_port = os.getenv("POSTGRES_PORT", "5432")
+        postgres_user = os.getenv("POSTGRES_USER", "postgres")
+        postgres_password = os.getenv("POSTGRES_PASSWORD")
+        postgres_db = os.getenv("POSTGRES_DB")
+
+        # If POSTGRES_DB is set, we have fragment-based config
+        if postgres_db:
+            # Build URL from fragments
+            if postgres_password:
+                auth = f"{postgres_user}:{postgres_password}"
+            else:
+                auth = postgres_user
+
+            url = f"postgresql://{auth}@{postgres_host}:{postgres_port}/{postgres_db}"
+            return cls(url=url)
+
+        # Priority 3: No configuration found
+        if require_url:
+            raise ValueError(
+                f"No database configuration found. Either set {database_url_var} "
+                "or POSTGRES_* environment variables (POSTGRES_DB is required)."
+            )
+
+        return None
+
     @field_validator("max_connections")
     @classmethod
     def validate_max_connections(cls, v: int, info) -> int:

@@ -8,6 +8,37 @@ pgfast is a lightweight asyncpg integration library for FastAPI that provides sc
 
 ## Development Commands
 
+### Configuration
+
+pgfast supports two ways to configure database connections:
+
+**Option 1: DATABASE_URL (recommended)**
+```bash
+export DATABASE_URL="postgresql://user:pass@localhost:5432/mydb"
+pgfast schema up
+```
+
+**Option 2: POSTGRES_* fragments (Docker-style)**
+```bash
+# Useful for Docker Compose, Kubernetes, CI/CD
+export POSTGRES_HOST="localhost"
+export POSTGRES_PORT="5432"
+export POSTGRES_USER="myuser"
+export POSTGRES_PASSWORD="mypass"
+export POSTGRES_DB="mydb"
+pgfast schema up
+```
+
+**Testing configuration**
+```bash
+# Option 1: URL-based
+export TEST_DATABASE_URL="postgresql://localhost/postgres"
+
+# Option 2: Fragment-based
+export TEST_POSTGRES_HOST="localhost"
+export TEST_POSTGRES_DB="postgres"
+```
+
 ### Testing
 ```bash
 # Run all tests
@@ -24,9 +55,29 @@ pytest --cov=src/pgfast
 pytest tests/integration/
 pytest -n auto tests/integration/  # Parallel
 
-# Note: Parallel testing is fully supported via pytest-xdist.
-# Each test gets an isolated database with unique naming,
-# preventing conflicts during concurrent execution.
+# Parallel Testing Considerations:
+# pgfast fully supports parallel testing via pytest-xdist. Each test gets
+# an isolated database with unique naming, preventing conflicts during
+# concurrent execution.
+#
+# Template database optimization includes automatic retry (10 attempts with
+# exponential backoff from 10-100ms) when template is locked, with fallback
+# to no-template creation only if retries fail.
+#
+# IMPORTANT: When running tests in parallel, monitor database resource usage.
+# Each parallel test creates a temporary database, which consumes:
+# - Connection slots (each pool uses min_connections to max_connections)
+# - Background workers (especially with extensions like TimescaleDB, PostGIS)
+# - Memory (shared buffers, work_mem per connection)
+# - Disk I/O (checkpoints, WAL writes)
+#
+# If tests become slow with high parallelism:
+# 1. Check postgres logs for resource warnings (e.g., "out of background workers")
+# 2. Reduce parallelism: pytest -n 4 (instead of -n auto)
+# 3. Increase database limits (max_connections, max_worker_processes, etc.)
+# 4. For TimescaleDB specifically: timescaledb.max_background_workers
+#
+# Rule of thumb: Start with pytest -n 4 and scale up while monitoring performance.
 ```
 
 ### CLI Usage
@@ -87,6 +138,7 @@ pgfast test-db cleanup                # Clean up test databases
 - `DatabaseTestManager`: Creates isolated test databases per test
 - `create_test_pool_with_schema()`: Convenience function to create DB with schema applied
 - Template database support for fast cloning: Creates `pgfast_template_*` database once per session, then clones for each test
+- **Intelligent retry and fallback for parallel testing**: When template database is locked (parallel pytest-xdist execution), automatically retries the fast template approach up to 10 times with exponential backoff (10ms → 20ms → 40ms → 80ms, capped at 100ms). If all retries fail, falls back to no-template creation with direct migration application. This provides optimal performance: most tests get fast cloning, brief conflicts are resolved by retry, and only sustained resource exhaustion triggers the slower fallback.
 - `_pool_db_names` registry: Maps pool `id()` to database name for cleanup tracking
 - Test databases named `pgfast_test_{uuid}`
 
@@ -111,10 +163,25 @@ pgfast test-db cleanup                # Clean up test databases
 - Validates URL scheme and pool settings on initialization
 
 **Environment Variables**
-- `DATABASE_URL`: Required for CLI commands
-- `TEST_DATABASE_URL`: Used in tests (defaults to `postgresql://localhost/postgres`)
-- `PGFAST_MIGRATIONS_DIR`: Override migrations directory (default: `db/migrations`)
-- `PGFAST_FIXTURES_DIR`: Override fixtures directory (default: `db/fixtures`)
+
+Database configuration (priority order):
+1. `DATABASE_URL`: PostgreSQL connection URL (recommended, e.g., `postgresql://user:pass@host:5432/dbname`)
+2. `POSTGRES_*` fragments (Docker-style): Alternative to DATABASE_URL
+   - `POSTGRES_HOST` (default: `localhost`)
+   - `POSTGRES_PORT` (default: `5432`)
+   - `POSTGRES_USER` (default: `postgres`)
+   - `POSTGRES_PASSWORD` (optional)
+   - `POSTGRES_DB` (required if using fragments)
+
+Testing configuration (priority order):
+1. `TEST_DATABASE_URL`: Test database URL (defaults to `postgresql://localhost/postgres`)
+2. `TEST_POSTGRES_*` fragments: Same as above but with `TEST_` prefix
+
+Directory overrides:
+- `PGFAST_MIGRATIONS_DIRS`: Colon-separated migration directories (overrides auto-discovery)
+- `PGFAST_FIXTURES_DIRS`: Colon-separated fixture directories (overrides auto-discovery)
+
+**Note**: `DATABASE_URL` takes priority over `POSTGRES_*` fragments if both are set. The fragment approach is useful for Docker Compose, Kubernetes, and CI/CD environments where credentials are managed separately.
 
 ### SQL Injection Protection
 
@@ -219,7 +286,7 @@ async def test_multi_db(db_pool_factory):
 
 3. **Transaction Safety**: All migrations run within transactions for atomic application/rollback.
 
-4. **Template Optimization**: Session-scoped template database is created once with all migrations applied, then cloned for each test. This significantly speeds up test execution.
+4. **Template Optimization with Retry and Fallback**: Session-scoped template database is created once with all migrations applied, then cloned for each test. This significantly speeds up test execution. If the template is locked during parallel test execution (pytest-xdist), the system automatically retries up to 10 times with exponential backoff (10ms → 20ms → 40ms → 80ms, capped at 100ms). Only if all retries fail does it fall back to creating databases without the template and applying migrations directly. This three-tier approach (fast clone → retry → fallback) provides optimal performance in most scenarios while maintaining reliability under sustained database resource exhaustion.
 
 5. **Async Context Managers**: The lifespan pattern uses `@asynccontextmanager` for proper startup/shutdown sequencing.
 

@@ -25,13 +25,51 @@ from pgfast.testing import (
 def db_config():
     """Database configuration for tests.
 
+    Supports two configuration methods:
+    1. TEST_DATABASE_URL environment variable (default: postgresql://localhost/postgres)
+    2. TEST_POSTGRES_* fragment variables (TEST_POSTGRES_DB required)
+
     Override this in your conftest.py to customize.
     """
     import os
 
-    url = os.getenv("TEST_DATABASE_URL", "postgresql://localhost/postgres")
+    # Try TEST_DATABASE_URL first
+    url = os.getenv("TEST_DATABASE_URL")
+    if url:
+        return DatabaseConfig(
+            url=url,
+            min_connections=2,
+            max_connections=5,
+        )
+
+    # Try TEST_POSTGRES_* fragments
+    postgres_host = os.getenv("TEST_POSTGRES_HOST")
+    postgres_port = os.getenv("TEST_POSTGRES_PORT")
+    postgres_user = os.getenv("TEST_POSTGRES_USER")
+    postgres_password = os.getenv("TEST_POSTGRES_PASSWORD")
+    postgres_db = os.getenv("TEST_POSTGRES_DB")
+
+    if postgres_db:
+        # Build URL from TEST_POSTGRES_* fragments
+        host = postgres_host or "localhost"
+        port = postgres_port or "5432"
+        user = postgres_user or "postgres"
+
+        if postgres_password:
+            auth = f"{user}:{postgres_password}"
+        else:
+            auth = user
+
+        url = f"postgresql://{auth}@{host}:{port}/{postgres_db}"
+        return DatabaseConfig(
+            url=url,
+            min_connections=2,
+            max_connections=5,
+        )
+
+    # Default fallback
     return DatabaseConfig(
-        url=url,
+        url="postgresql://localhost/postgres",
         min_connections=2,
         max_connections=5,
     )

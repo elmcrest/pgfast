@@ -58,28 +58,54 @@ def confirm(message: str) -> bool:
 
 
 def get_config() -> DatabaseConfig:
-    """Get database configuration from environment or defaults."""
+    """Get database configuration from environment or defaults.
+
+    Supports two configuration methods:
+    1. DATABASE_URL environment variable (recommended)
+    2. POSTGRES_* fragment variables (POSTGRES_DB required, others optional)
+    """
     import os
 
-    url = os.getenv("DATABASE_URL")
-    if not url:
-        print(f"{RED}ERROR:{RESET} DATABASE_URL environment variable not set")
+    try:
+        # Try to build config from environment (DATABASE_URL or POSTGRES_* fragments)
+        config = DatabaseConfig.from_env(require_url=True)
+    except ValueError as e:
+        print(f"{RED}ERROR:{RESET} {e}")
+        print(f"\n{BOLD}Configuration options:{RESET}")
+        print(
+            "  1. Set DATABASE_URL: export DATABASE_URL='postgresql://localhost/mydb'"
+        )
+        print(
+            "  2. Set POSTGRES_* variables: export POSTGRES_DB='mydb' POSTGRES_HOST='localhost' ..."
+        )
         sys.exit(1)
-    else:
-        # Parse optional directory overrides (colon-separated paths)
-        migrations_dirs = None
-        if dirs := os.getenv("PGFAST_MIGRATIONS_DIRS"):
-            migrations_dirs = [d.strip() for d in dirs.split(":") if d.strip()]
 
-        fixtures_dirs = None
-        if dirs := os.getenv("PGFAST_FIXTURES_DIRS"):
-            fixtures_dirs = [d.strip() for d in dirs.split(":") if d.strip()]
+    # Type assertion: config cannot be None here because require_url=True
+    # either returns DatabaseConfig or raises ValueError (handled above)
+    assert config is not None
 
+    # Parse optional directory overrides (colon-separated paths)
+    migrations_dirs = None
+    if dirs := os.getenv("PGFAST_MIGRATIONS_DIRS"):
+        migrations_dirs = [d.strip() for d in dirs.split(":") if d.strip()]
+
+    fixtures_dirs = None
+    if dirs := os.getenv("PGFAST_FIXTURES_DIRS"):
+        fixtures_dirs = [d.strip() for d in dirs.split(":") if d.strip()]
+
+    # If directory overrides are specified, create a new config with them
+    if migrations_dirs or fixtures_dirs:
         return DatabaseConfig(
-            url=url,
+            url=config.url,
+            min_connections=config.min_connections,
+            max_connections=config.max_connections,
+            timeout=config.timeout,
+            command_timeout=config.command_timeout,
             migrations_dirs=migrations_dirs,
             fixtures_dirs=fixtures_dirs,
         )
+
+    return config
 
 
 def cmd_schema_create(args: argparse.Namespace) -> None:
