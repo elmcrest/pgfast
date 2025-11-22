@@ -156,6 +156,31 @@ pgfast schema up --dry-run    # See what would be applied
 pgfast schema down --dry-run  # See what would be rolled back
 ```
 
+### Organizing Migrations at Scale
+
+As your project grows, organize migrations using subdirectories. pgfast automatically discovers migrations in nested directories:
+
+```
+db/migrations/
+├── users/
+│   ├── 20250101000000_create_users_table_up.sql
+│   ├── 20250101000000_create_users_table_down.sql
+│   └── 20250305120000_add_email_verification_up.sql
+├── products/
+│   └── 20250102000000_create_products_table_up.sql
+├── orders/
+│   └── 20250103000000_create_orders_table_up.sql
+└── auth/
+    └── 20250115000000_add_oauth_providers_up.sql
+```
+
+Subdirectories are discovered automatically via the `**/migrations` pattern. Dependencies work across subdirectories, and migrations are applied in timestamp order regardless of directory structure.
+
+You can organize by:
+- **Domain/Feature**: `users/`, `products/`, `orders/`
+- **Release**: `v1.0/`, `v1.1/`, `v2.0/`
+- **Date + Domain**: `2025-01-auth/`, `2025-02-products/`
+
 ## Testing
 
 pgfast includes pytest fixtures for fast, isolated testing:
@@ -200,6 +225,14 @@ async def test_specific_feature(isolated_db, fixture_loader):
 Fixtures are defined as SQL files following the naming convention `{version}_{name}_fixture.sql`. pgfast automatically discovers fixtures across multiple directories (e.g., `db/fixtures/`, or any directory matching `**/fixtures` pattern).
 
 - **Auto-Discovery**: Fixtures are discovered across multiple directories automatically. You can have fixtures in `db/fixtures/`, `module_a/fixtures/`, etc.
+- **Subdirectory Support**: Like migrations, fixtures support subdirectories for organization:
+  ```
+  db/fixtures/
+  ├── users/
+  │   └── 20250101000000_create_users_fixture.sql
+  └── products/
+      └── 20250102000000_create_products_fixture.sql
+  ```
 - **Version Matching**: The version number MUST match a corresponding migration version.
 - **Dependency Order**: Fixtures are loaded in the same order as their corresponding migrations.
 - **Reusability**: All discovered fixtures are available globally and can be used in any test via `fixture_loader` or `db_with_fixtures`.

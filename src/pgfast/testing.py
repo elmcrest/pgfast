@@ -429,7 +429,8 @@ class DatabaseTestManager:
                 continue
 
             # Only include files matching the fixture naming convention
-            for sql_file in fixtures_dir.glob("*.sql"):
+            # Recursively search for fixtures in subdirectories
+            for sql_file in fixtures_dir.glob("**/*.sql"):
                 fixture = Fixture.from_path(sql_file)
                 if fixture:
                     all_fixtures.append(fixture)

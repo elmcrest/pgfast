@@ -225,6 +225,34 @@ Multiple dependencies can be comma-separated on one line:
 -- depends_on: 20240101000000, 20240102000000
 ```
 
+**Subdirectory Organization**: Migrations can be organized in subdirectories for better scalability:
+```
+db/migrations/
+├── users/
+│   ├── 20250101000000_create_users_table_up.sql
+│   └── 20250101000000_create_users_table_down.sql
+├── products/
+│   └── 20250102000000_create_products_table_up.sql
+└── orders/
+    └── 20250103000000_create_orders_table_up.sql
+```
+
+The `**/migrations` pattern automatically discovers migrations in nested directories. Dependencies work across subdirectories, and migrations are applied in dependency order.
+
+### Fixture File Structure
+
+Fixtures follow the naming convention `{version}_{name}_fixture.sql` where the version matches a migration version. Like migrations, fixtures support subdirectory organization:
+
+```
+db/fixtures/
+├── users/
+│   └── 20250101000000_create_users_fixture.sql
+└── products/
+    └── 20250102000000_create_products_fixture.sql
+```
+
+Fixtures are discovered via the `**/fixtures` pattern (testing.py:433 uses `glob("**/*.sql")`). They inherit dependency order from their corresponding migrations and are loaded in that order to ensure referential integrity.
+
 ### Error Handling
 
 Custom exceptions in `exceptions.py`:
