@@ -589,11 +589,11 @@ def cmd_fixtures_load(args: argparse.Namespace) -> None:
                 print(f"{YELLOW}No fixture directories found{RESET}")
                 return
 
-            # Collect all fixtures from all directories
+            # Collect all fixtures from all directories (including subdirs)
             fixture_paths = []
             for fixtures_dir in fixtures_dirs:
                 if fixtures_dir.exists():
-                    fixture_paths.extend(fixtures_dir.glob("*.sql"))
+                    fixture_paths.extend(fixtures_dir.glob("**/*.sql"))
 
             # Sort by full path for deterministic ordering
             fixture_paths = sorted(fixture_paths)

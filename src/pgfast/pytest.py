@@ -83,11 +83,11 @@ async def template_db(db_config):
     This provides significant speed improvements for large schemas.
     Uses auto-discovery to find all migrations directories.
     """
-    # Check if any migrations exist
+    # Check if any migrations exist (use **/*.sql to find migrations in subdirs)
     migrations_dirs = db_config.discover_migrations_dirs()
     has_migrations = False
     for migrations_dir in migrations_dirs:
-        if migrations_dir.exists() and list(migrations_dir.glob("*.sql")):
+        if migrations_dir.exists() and list(migrations_dir.glob("**/*.sql")):
             has_migrations = True
             break
 
