@@ -12,3 +12,6 @@ wheels/
 .vscode
 
 .claude
+
+.env
+.envrc

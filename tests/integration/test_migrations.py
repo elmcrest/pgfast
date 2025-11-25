@@ -611,3 +611,86 @@ async def test_auto_dependency_creation(manager, tmp_path):
     # Should depend on third migration (the latest)
     third_version = up3.stem.split("_")[0]
     assert third_version in content4
+
+
+async def test_discover_migrations_in_subdirectories(manager, tmp_path):
+    """Test that migrations in subdirectories are properly discovered.
+
+    This tests the structure commonly used in larger projects where migrations
+    are organized by domain/module:
+
+    migrations/
+    ├── tenants/
+    │   ├── 20251117195818785_create_down.sql
+    │   └── 20251117195818785_create_up.sql
+    ├── locations/
+    │   ├── 20251117195827054_create_down.sql
+    │   └── 20251117195827054_create_up.sql
+    └── appointments/
+        ├── 20251121172724778_appointments_model_down.sql
+        └── 20251121172724778_appointments_model_up.sql
+    """
+    migrations_dir = tmp_path / "migrations"
+
+    # Create subdirectories mimicking a real project structure
+    tenants_dir = migrations_dir / "tenants"
+    locations_dir = migrations_dir / "locations"
+    appointments_dir = migrations_dir / "appointments"
+
+    tenants_dir.mkdir(parents=True)
+    locations_dir.mkdir(parents=True)
+    appointments_dir.mkdir(parents=True)
+
+    # Create migrations in subdirectories (tenants first - no deps)
+    (tenants_dir / "20251117195818785_create_up.sql").write_text(
+        "CREATE TABLE tenants (id SERIAL PRIMARY KEY, name TEXT);"
+    )
+    (tenants_dir / "20251117195818785_create_down.sql").write_text(
+        "DROP TABLE tenants;"
+    )
+
+    # Locations depends on tenants
+    (locations_dir / "20251117195827054_create_up.sql").write_text(
+        "-- depends_on: 20251117195818785\n"
+        "CREATE TABLE locations (id SERIAL PRIMARY KEY, tenant_id INTEGER REFERENCES tenants(id));"
+    )
+    (locations_dir / "20251117195827054_create_down.sql").write_text(
+        "DROP TABLE locations;"
+    )
+
+    # Appointments depends on locations
+    (appointments_dir / "20251121172724778_appointments_model_up.sql").write_text(
+        "-- depends_on: 20251117195827054\n"
+        "CREATE TABLE appointments (id SERIAL PRIMARY KEY, location_id INTEGER REFERENCES locations(id));"
+    )
+    (appointments_dir / "20251121172724778_appointments_model_down.sql").write_text(
+        "DROP TABLE appointments;"
+    )
+
+    # Discover migrations - should find all 3 from subdirectories
+    migrations = manager._discover_migrations()
+
+    assert len(migrations) == 3, f"Expected 3 migrations, found {len(migrations)}"
+
+    # Verify versions are correct
+    versions = {m.version for m in migrations}
+    assert versions == {20251117195818785, 20251117195827054, 20251121172724778}
+
+    # Verify dependencies are parsed correctly
+    migration_map = {m.version: m for m in migrations}
+    assert migration_map[20251117195818785].dependencies == []
+    assert migration_map[20251117195827054].dependencies == [20251117195818785]
+    assert migration_map[20251121172724778].dependencies == [20251117195827054]
+
+    # Apply migrations - should respect dependency order
+    applied = await manager.schema_up()
+
+    assert applied == [20251117195818785, 20251117195827054, 20251121172724778]
+
+    # Verify all tables exist
+    async with manager.pool.acquire() as conn:
+        tables = await conn.fetch(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename IN ('tenants', 'locations', 'appointments')"
+        )
+        table_names = {row["tablename"] for row in tables}
+        assert table_names == {"tenants", "locations", "appointments"}

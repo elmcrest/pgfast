@@ -36,7 +36,7 @@ class SchemaManager:
         self.migrations_dirs = config.discover_migrations_dirs()
 
     def _discover_in_directory(self, migrations_dir: Path) -> list[Migration]:
-        """Discover migrations in a single directory.
+        """Discover migrations in a single directory and its subdirectories.
 
         Args:
             migrations_dir: Path to migrations directory
@@ -50,8 +50,8 @@ class SchemaManager:
         if not migrations_dir.exists():
             return []
 
-        # Find all _up.sql files
-        up_files = list(migrations_dir.glob("*_up.sql"))
+        # Find all _up.sql files recursively (supports subdirectory organization)
+        up_files = list(migrations_dir.glob("**/*_up.sql"))
 
         migrations = []
         for up_file in up_files:

@@ -94,7 +94,10 @@ def test_from_env_fragments_with_defaults(monkeypatch):
     """Should use defaults for missing fragment variables."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("POSTGRES_DB", "testdb")
-    # Not setting POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER
+    monkeypatch.delenv("POSTGRES_HOST", raising=False)
+    monkeypatch.delenv("POSTGRES_PORT", raising=False)
+    monkeypatch.delenv("POSTGRES_USER", raising=False)
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
 
     config = DatabaseConfig.from_env()
     assert config is not None
@@ -107,7 +110,7 @@ def test_from_env_fragments_without_password(monkeypatch):
     monkeypatch.setenv("POSTGRES_HOST", "localhost")
     monkeypatch.setenv("POSTGRES_USER", "testuser")
     monkeypatch.setenv("POSTGRES_DB", "testdb")
-    # Not setting POSTGRES_PASSWORD
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
 
     config = DatabaseConfig.from_env()
     assert config is not None
