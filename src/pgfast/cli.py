@@ -119,7 +119,15 @@ def cmd_schema_create(args: argparse.Namespace) -> None:
         config = get_config()
 
         # Build target directory path
-        target_dir = Path(args.module) / "migrations"
+        # If "migrations" is already in the path, don't add it again.
+        # This supports both:
+        #   - Module-based: pgfast schema create users add_table → users/migrations/
+        #   - Centralized: pgfast schema create migrations/users add_table → migrations/users/
+        module_path = Path(args.module)
+        if "migrations" in module_path.parts:
+            target_dir = module_path
+        else:
+            target_dir = module_path / "migrations"
 
         # Create manager (no pool needed for file operations)
         manager = SchemaManager(
@@ -776,7 +784,7 @@ def create_parser() -> argparse.ArgumentParser:
     )
     create_parser.add_argument(
         "module",
-        help="Module directory (e.g., 'app/users' creates app/users/migrations/)",
+        help="Target directory. If 'migrations' is in the path, uses as-is; otherwise appends /migrations (e.g., 'users' → users/migrations/, 'migrations/users' → migrations/users/)",
     )
     create_parser.add_argument("name", help="Migration name")
     create_parser.add_argument(
