@@ -80,6 +80,7 @@ async def test_user_creation(isolated_db):
 - asyncpg connection pooling with configurable size and timeouts
 - Graceful startup and shutdown with FastAPI lifespan
 - Connection validation on pool creation
+- RLS-aware connections with per-request session variables
 
 ### Schema Migrations
 - Timestamped migration files: `{timestamp}_{name}_up.sql` and `_down.sql`
@@ -246,7 +247,7 @@ async def test_multi_db(db_pool_factory):
     # Create two isolated databases
     pool1 = await db_pool_factory()
     pool2 = await db_pool_factory()
-    
+
     try:
         # Test interaction between databases
         pass
@@ -255,6 +256,66 @@ async def test_multi_db(db_pool_factory):
         await db_pool_factory.cleanup(pool1)
         await db_pool_factory.cleanup(pool2)
 ```
+
+## Row-Level Security (RLS)
+
+pgfast supports multi-tenant applications using PostgreSQL Row-Level Security. The `create_rls_dependency()` function creates a FastAPI dependency that sets session variables per-request, which your RLS policies can reference.
+
+### Basic Usage
+
+```python
+from fastapi import FastAPI, Depends, Request
+from pgfast import DatabaseConfig, create_lifespan, create_rls_dependency
+import asyncpg
+
+config = DatabaseConfig(url="postgresql://localhost/mydb")
+app = FastAPI(lifespan=create_lifespan(config))
+
+async def get_tenant_settings(request: Request) -> dict[str, str]:
+    # Extract tenant from JWT, header, subdomain, etc.
+    tenant_id = request.headers.get("X-Tenant-ID", "")
+    return {"app.tenant_id": tenant_id}
+
+get_rls_connection = create_rls_dependency(get_tenant_settings)
+
+@app.get("/items")
+async def list_items(conn: asyncpg.Connection = Depends(get_rls_connection)):
+    # RLS policies using current_setting('app.tenant_id') filter automatically
+    return await conn.fetch("SELECT * FROM items")
+```
+
+### Multiple Session Variables
+
+Pass multiple settings for complex authorization:
+
+```python
+async def get_rls_settings(request: Request) -> dict[str, str]:
+    return {
+        "app.tenant_id": request.state.tenant_id,
+        "app.user_id": request.state.user_id,
+        "app.role": request.state.role,
+    }
+
+get_rls_connection = create_rls_dependency(get_rls_settings)
+```
+
+### Example RLS Policy
+
+```sql
+-- Migration: Enable RLS and create policy
+ALTER TABLE items ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON items
+    USING (tenant_id = current_setting('app.tenant_id')::integer);
+```
+
+### PgBouncer Compatibility
+
+`create_rls_dependency()` uses PostgreSQL's `set_config()` with `LOCAL` scope, making it safe for connection poolers like PgBouncer in transaction pooling mode. Session variables are transaction-scoped and automatically reset when the request completes - they never leak between clients.
+
+### Transaction Context
+
+All queries within an RLS dependency execute inside a transaction (required for `SET LOCAL` semantics). For read-only queries this has no practical impact. For write operations, be aware you're already in a transaction context.
 
 ## Configuration
 
