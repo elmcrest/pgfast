@@ -121,6 +121,7 @@ pgfast test-db cleanup                # Clean up test databases
 **FastAPI Integration** (`fastapi.py`)
 - `create_lifespan()`: Factory function that returns lifespan context manager for pool lifecycle
 - `get_db_pool()`: FastAPI dependency to inject pool into routes
+- `create_rls_dependency()`: Factory for creating RLS-aware connection dependencies with session variables
 - Pool stored in `app.state.db_pool`
 
 **Schema Management** (`schema.py`)
@@ -194,6 +195,47 @@ await admin_conn.execute(query)
 ```
 
 This pattern protects against SQL injection when creating/dropping databases. Use this pattern when adding similar functionality.
+
+### Row-Level Security (RLS) Support
+
+pgfast provides `create_rls_dependency()` for multi-tenant applications using PostgreSQL RLS policies. It sets session variables per-request using `SET LOCAL` within a transaction, ensuring:
+
+- **PgBouncer compatibility**: Uses `set_config()` with `LOCAL` scope, so settings don't leak between clients in transaction pooling mode
+- **Automatic cleanup**: Variables are transaction-scoped and automatically reset when the request ends
+- **Injection safety**: Uses parameterized queries via PostgreSQL's `set_config()` function
+
+**Usage**:
+```python
+from fastapi import Depends, Request
+from pgfast import create_rls_dependency, create_lifespan, DatabaseConfig
+
+config = DatabaseConfig(url="postgresql://localhost/mydb")
+app = FastAPI(lifespan=create_lifespan(config))
+
+async def get_tenant_settings(request: Request) -> dict[str, str]:
+    # Extract tenant from JWT, header, etc.
+    tenant_id = request.headers.get("X-Tenant-ID", "")
+    return {"app.tenant_id": tenant_id}
+
+get_rls_connection = create_rls_dependency(get_tenant_settings)
+
+@app.get("/items")
+async def list_items(conn: asyncpg.Connection = Depends(get_rls_connection)):
+    # RLS policies using current_setting('app.tenant_id') work here
+    return await conn.fetch("SELECT * FROM items")
+```
+
+**Multiple settings**:
+```python
+async def get_rls_settings(request: Request) -> dict[str, str]:
+    return {
+        "app.tenant_id": request.state.tenant_id,
+        "app.user_id": request.state.user_id,
+        "app.role": request.state.role,
+    }
+```
+
+**Note**: All queries execute inside a transaction (required for `SET LOCAL`). For read-only queries this has no practical impact. For write operations, be aware you're already in a transaction context.
 
 ### Migration File Structure
 

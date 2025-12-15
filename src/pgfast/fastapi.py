@@ -2,7 +2,7 @@
 
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Awaitable, Callable, Optional
 
 import asyncpg
 from fastapi import FastAPI, Request
@@ -87,3 +87,75 @@ async def get_db_pool(request: Request) -> asyncpg.Pool:
         asyncpg.Pool: Database connection pool
     """
     return request.app.state.db_pool
+
+
+def create_rls_dependency(
+    get_settings: Callable[[Request], Awaitable[dict[str, str]]],
+) -> Callable[[Request], AsyncGenerator[asyncpg.Connection, None]]:
+    """Create a FastAPI dependency for RLS-aware database connections.
+
+    This factory creates a dependency that acquires a connection, sets
+    session variables using SET LOCAL within a transaction, and yields
+    the connection. Variables are automatically cleared when the
+    transaction ends.
+
+    Using SET LOCAL ensures compatibility with PgBouncer in transaction
+    pooling mode - settings don't leak between clients.
+
+    Example:
+        from fastapi import Depends, Request
+        from pgfast import create_rls_dependency
+
+        async def get_tenant_settings(request: Request) -> dict[str, str]:
+            # Extract tenant from JWT, header, etc.
+            tenant_id = request.headers.get("X-Tenant-ID", "")
+            return {"app.tenant_id": tenant_id}
+
+        # Create the dependency
+        get_rls_connection = create_rls_dependency(get_tenant_settings)
+
+        @app.get("/items")
+        async def list_items(
+            conn: asyncpg.Connection = Depends(get_rls_connection)
+        ):
+            # RLS policies using current_setting('app.tenant_id') work here
+            return await conn.fetch("SELECT * FROM items")
+
+    For multiple settings (e.g., tenant + user):
+        async def get_rls_settings(request: Request) -> dict[str, str]:
+            return {
+                "app.tenant_id": request.state.tenant_id,
+                "app.user_id": request.state.user_id,
+                "app.role": request.state.role,
+            }
+
+    Note:
+        All queries within the dependency execute inside a transaction.
+        This is required for SET LOCAL to work correctly. For read-only
+        queries this has no practical impact (PostgreSQL uses implicit
+        transactions anyway). For write operations, be aware you're
+        already in a transaction context.
+
+    Args:
+        get_settings: Async function that extracts RLS settings from the
+            request. Returns a dict mapping setting names to values.
+            Setting names should include the namespace (e.g., "app.tenant_id").
+
+    Returns:
+        A FastAPI dependency that yields an asyncpg.Connection with
+        RLS session variables set.
+    """
+
+    async def dependency(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
+        pool: asyncpg.Pool = request.app.state.db_pool
+        settings = await get_settings(request)
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for key, value in settings.items():
+                    # Use set_config() for parameterized, injection-safe setting
+                    # Third parameter `true` = LOCAL (transaction-scoped)
+                    await conn.execute("SELECT set_config($1, $2, true)", key, value)
+                yield conn
+
+    return dependency
