@@ -13,7 +13,7 @@ from pgfast.exceptions import (
     SchemaError,
     TestDatabaseError,
 )
-from pgfast.fastapi import create_lifespan, get_db_pool
+from pgfast.fastapi import create_lifespan, create_rls_dependency, get_db_pool
 from pgfast.schema import SchemaManager
 from pgfast.testing import (
     DatabaseTestManager,
@@ -31,6 +31,7 @@ __all__ = [
     "PgfastError",
     "TestDatabaseError",
     "create_lifespan",
+    "create_rls_dependency",
     "get_db_pool",
     "SchemaManager",
     "DatabaseTestManager",
