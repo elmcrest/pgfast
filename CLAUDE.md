@@ -82,12 +82,9 @@ pytest -n auto tests/integration/  # Parallel
 
 ### CLI Usage
 ```bash
-# Initialize directory structure
-pgfast init
-
-# Schema management (formerly called "migrate")
-pgfast schema create <name>           # Create new migration files (auto-depends on latest)
-pgfast schema create <name> --no-depends  # Create independent migration
+# Schema management
+pgfast schema create <module_path> <name>                # Create new migration files (auto-depends on latest)
+pgfast schema create <module_path> <name> --no-depends   # Create independent migration
 pgfast schema up                       # Apply pending migrations
 pgfast schema up --target <version>   # Migrate to specific version
 pgfast schema up --dry-run            # Preview migrations without applying
@@ -100,6 +97,7 @@ pgfast schema deps                    # Show dependency graph
 pgfast schema verify                  # Verify migration checksums
 
 # Fixture management
+pgfast fixtures create                           # Create missing fixture files for migrations
 pgfast fixtures load <fixtures...>               # Load into DATABASE_URL database
 pgfast fixtures load <fixtures...> --database <db>  # Load into specific database
 
@@ -127,9 +125,9 @@ pgfast test-db cleanup                # Clean up test databases
 **Schema Management** (`schema.py`)
 - `SchemaManager`: Handles migration discovery, application, and rollback
 - Migration tracking table: `_pgfast_migrations` (stores version, name, checksum, applied_at)
-- Migrations are timestamped with format: `{YYYYMMDDHHmmss}_{name}_up.sql` and `{YYYYMMDDHHmmss}_{name}_down.sql`
+- Migration files are timestamped: `{YYYYMMDDHHMMSSmmm}_{name}_up.sql` and `{YYYYMMDDHHMMSSmmm}_{name}_down.sql` (milliseconds)
 - All migrations run in transactions
-- Discovers migrations by scanning `db/migrations/` directory (or configured path)
+- Discovers migrations by scanning configured migration directories (auto-discovered via `**/migrations` from the current working directory by default)
 - **Dependency tracking**: Parses `-- depends_on:` comments to build dependency graph
 - **Checksum validation**: SHA-256 checksums stored and validated on apply/rollback
 - **Topological sorting**: Uses Kahn's algorithm to apply migrations in dependency order
@@ -299,13 +297,14 @@ Fixtures are discovered via the `**/fixtures` pattern (testing.py:433 uses `glob
 
 Custom exceptions in `exceptions.py`:
 - `PgfastError`: Base exception
-- `ValidationError`: Invalid configuration
 - `ConnectionError`: Pool/connection failures
 - `MigrationError`: Migration execution failures
 - `SchemaError`: Schema management errors (e.g., missing migrations directory)
 - `TestDatabaseError`: Test database lifecycle errors
 - `DependencyError`: Migration dependency violations (circular, missing, unapplied)
 - `ChecksumError`: Migration file checksum mismatches
+
+Configuration validation errors surface as `pydantic.ValidationError`.
 
 All asyncpg exceptions are caught and wrapped in appropriate pgfast exceptions.
 
@@ -364,9 +363,9 @@ async def test_multi_db(db_pool_factory):
 
 7. **Dependency Validation**: When applying migrations, the validation checks that dependencies exist in either the applied set OR the pending set. The topological sort ensures correct ordering. During rollback, dependencies are validated linearly (can't rollback if remaining migrations depend on it).
 
-8. **Checksum Algorithm**: SHA-256 checksums are calculated from the UP file content only. Checksums are stored in the `_pgfast_migrations` table and validated before applying new migrations or rolling back.
+8. **Checksum Algorithm**: SHA-256 checksums are calculated from the combined contents of the UP and DOWN files. Checksums are stored in the `_pgfast_migrations` table and validated before applying new migrations or rolling back.
 
-9. **Migration Discovery**: The `_discover_migrations()` method scans the filesystem for paired migration files. Only migrations with both UP and DOWN files present are considered complete (`Migration.is_complete`).
+9. **Migration Discovery**: Migrations are discovered by scanning for `*_up.sql` files and pairing them with a corresponding `_down.sql` path. `Migration.is_complete` indicates whether both files exist; applying “up” only requires the up file, while rollback requires the down file.
 
 10. **Circular Dependency Detection**: Uses depth-first search (DFS) to detect cycles in the dependency graph before applying migrations.
 
@@ -374,9 +373,10 @@ async def test_multi_db(db_pool_factory):
 
 - **asyncpg**: PostgreSQL async driver
 - **fastapi**: Web framework (for integration)
-- **typer**: CLI framework
-- **rich**: Terminal formatting for CLI
+- **pydantic**: Data validation (used directly; typically installed via FastAPI)
 - **pytest**: Test framework
 - **pytest-asyncio**: Async test support
 - **pytest-xdist**: Parallel test execution (dev dependency)
-- **pydantic**: Data validation (Migration model)
+- **httpx**: FastAPI testing client (dev dependency)
+- **ruff**: Linting/formatting (dev dependency)
+- **ty**: Type checking (dev dependency)

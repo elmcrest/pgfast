@@ -17,6 +17,29 @@ pgfast gives you everything you need to build FastAPI applications with PostgreS
 - **Simple Migrations**: Timestamped SQL files. Up and down. That's it.
 - **Built for Testing**: Pytest fixtures included. Create isolated databases, load fixtures, test in parallel.
 
+## Positioning
+
+### Who it's for
+
+- FastAPI + PostgreSQL projects using `asyncpg` that want a small, explicit database layer.
+- Teams that prefer writing SQL directly and using PostgreSQL features (RLS, triggers, CTEs, etc.).
+- Codebases where integration tests need to be fast, isolated, and parallel-friendly (database per test).
+
+### Who it's not for
+
+- You want an ORM/unit-of-work pattern, model relationships, or query composition (use SQLAlchemy ORM).
+- You want migration autogeneration from models or a more full-featured migration workflow (use Alembic).
+- You're not on PostgreSQL (pgfast is Postgres-specific via `asyncpg`).
+
+### How it compares
+
+| Option | What it covers | Testing story | Tradeoffs |
+| --- | --- | --- | --- |
+| **pgfast** | `asyncpg` pooling + FastAPI integration + SQL-file migrations | DB-per-test fixtures with template cloning | You own the SQL; fewer abstractions |
+| **Alembic** | Migrations (commonly with SQLAlchemy) | Up to you (often custom) | Not a runtime DB layer; more moving parts |
+| **SQLAlchemy ORM (+ Alembic)** | ORM + query building + migrations | Up to you | More abstraction; less “just SQL” |
+| **Testcontainers (Postgres)** | Hermetic Postgres for tests/CI | Very isolated; container startup cost | Doesn’t provide migrations or runtime access by itself |
+
 ## Installation
 
 ```bash
@@ -327,15 +350,15 @@ config = DatabaseConfig(
     min_connections=5,
     max_connections=20,
     timeout=10.0,
-    migrations_dir="db/migrations",
-    fixtures_dir="db/fixtures",
+    migrations_dirs=["db/migrations"],
+    fixtures_dirs=["db/fixtures"],
 )
 ```
 
-Or use environment variables:
+When using the CLI, you can also use environment variables:
 - `DATABASE_URL`: Connection string
-- `PGFAST_MIGRATIONS_DIR`: Custom migrations directory
-- `PGFAST_FIXTURES_DIR`: Custom fixtures directory
+- `PGFAST_MIGRATIONS_DIRS`: Colon-separated migration directories (overrides auto-discovery)
+- `PGFAST_FIXTURES_DIRS`: Colon-separated fixture directories (overrides auto-discovery)
 
 ## Philosophy
 
