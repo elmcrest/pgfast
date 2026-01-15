@@ -14,7 +14,7 @@ class DatabaseConfig(BaseModel):
         min_connections: Minimum pool size (default: 5)
         max_connections: Maximum pool size (default: 20)
         timeout: Connection timeout in seconds (default: 10.0)
-        command_timeout: Query timeout in seconds (default: 60.0)
+        command_timeout: Query timeout in seconds (default: None = no timeout)
         migrations_dirs: Optional list of migration directories. If None, auto-discover
         fixtures_dirs: Optional list of fixture directories. If None, auto-discover
         migrations_search_pattern: Glob pattern for discovering migrations (default: "**/migrations")
@@ -31,7 +31,7 @@ class DatabaseConfig(BaseModel):
     min_connections: int = Field(default=5, gt=0)
     max_connections: int = Field(default=20, gt=0)
     timeout: float = Field(default=10.0, gt=0)
-    command_timeout: float = Field(default=60.0, gt=0)
+    command_timeout: float | None = Field(default=None)  # None = no timeout
 
     # Optional explicit directory configuration
     # If None, auto-discovery is used
@@ -145,6 +145,14 @@ class DatabaseConfig(BaseModel):
             raise ValueError(
                 f"max_connections ({v}) must be >= min_connections ({min_conn})"
             )
+        return v
+
+    @field_validator("command_timeout")
+    @classmethod
+    def validate_command_timeout(cls, v: float | None) -> float | None:
+        """Validate command_timeout is positive if provided."""
+        if v is not None and v <= 0:
+            raise ValueError("command_timeout must be positive if provided")
         return v
 
     @model_validator(mode="after")
