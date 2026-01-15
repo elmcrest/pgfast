@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import sys
+from importlib.metadata import version
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -113,7 +114,7 @@ def cmd_schema_create(args: argparse.Namespace) -> None:
 
     By default, new migrations automatically depend on the latest existing migration
     across all modules. Use --no-depends to create an independent migration for
-    parallel development.
+    parallel development. Use --python to create Python migration files instead of SQL.
     """
     try:
         config = get_config()
@@ -139,9 +140,11 @@ def cmd_schema_create(args: argparse.Namespace) -> None:
             name=args.name,
             target_dir=target_dir,
             auto_depend=not args.no_depends,
+            python=args.python,
         )
 
-        print(f"\n{GREEN}✓ Created migration files:{RESET}")
+        migration_type = "Python" if args.python else "SQL"
+        print(f"\n{GREEN}✓ Created {migration_type} migration files:{RESET}")
         print(f"  UP:   {up_file}")
         print(f"  DOWN: {down_file}")
 
@@ -151,7 +154,13 @@ def cmd_schema_create(args: argparse.Namespace) -> None:
             if "depends_on:" in content:
                 print(f"\n{DIM}Auto-dependency added to latest migration{RESET}")
 
-        print("\nEdit these files to add your migration SQL.")
+        if args.python:
+            print("\nEdit these files to add your migration Python code.")
+            print(
+                f"{DIM}Each file must define an async `migrate(conn)` function.{RESET}"
+            )
+        else:
+            print("\nEdit these files to add your migration SQL.")
 
     except PgfastError as e:
         print(f"{RED}ERROR:{RESET} {e}")
@@ -201,7 +210,10 @@ def cmd_schema_up(args: argparse.Namespace) -> None:
                         )
 
                     print(f"  Checksum: {preview['checksum'][:16]}...")
-                    print(f"  SQL Preview ({preview['total_lines']} lines):")
+                    preview_type = (
+                        "Python" if preview["migration_type"] == "python" else "SQL"
+                    )
+                    print(f"  {preview_type} Preview ({preview['total_lines']} lines):")
                     print(f"{DIM}{preview['sql_preview']}{RESET}\n")
 
                 return
@@ -306,7 +318,12 @@ def cmd_schema_down(args: argparse.Namespace) -> None:
                             )
 
                         print(f"  Checksum: {preview['checksum'][:16]}...")
-                        print(f"  SQL Preview ({preview['total_lines']} lines):")
+                        preview_type = (
+                            "Python" if preview["migration_type"] == "python" else "SQL"
+                        )
+                        print(
+                            f"  {preview_type} Preview ({preview['total_lines']} lines):"
+                        )
                         print(f"{DIM}{preview['sql_preview']}{RESET}\n")
 
                 return
@@ -389,9 +406,10 @@ def cmd_schema_status(args: argparse.Namespace) -> None:
 
                 for migration in pending:
                     status = "✓ Ready" if migration.is_complete else "✗ Incomplete"
-                    rows.append([str(migration.version), migration.name, status])
+                    mtype = "Python" if migration.migration_type == "python" else "SQL"
+                    rows.append([str(migration.version), migration.name, mtype, status])
 
-                print_table(["Version", "Name", "Status"], rows)
+                print_table(["Version", "Name", "Type", "Status"], rows)
 
         except PgfastError as e:
             print(f"\n{RED}ERROR:{RESET} {e}")
@@ -436,17 +454,19 @@ def cmd_schema_deps(args: argparse.Namespace) -> None:
 
                 deps = dep_graph.get(migration.version, [])
                 deps_str = ", ".join(map(str, deps)) if deps else "-"
+                mtype = "Python" if migration.migration_type == "python" else "SQL"
 
                 rows.append(
                     [
                         str(migration.version),
                         migration.name,
+                        mtype,
                         status_str,
                         deps_str,
                     ]
                 )
 
-            print_table(["Version", "Name", "Status", "Dependencies"], rows)
+            print_table(["Version", "Name", "Type", "Status", "Dependencies"], rows)
 
             # Check for circular dependencies
             cycles = manager._detect_circular_dependencies(all_migrations)
@@ -796,6 +816,12 @@ def create_parser() -> argparse.ArgumentParser:
         prog="pgfast",
         description="pgfast - Lightweight asyncpg integration for FastAPI",
     )
+    parser.add_argument(
+        "--version",
+        "-V",
+        action="version",
+        version=f"%(prog)s {version('pgfast')}",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True, help="Command")
 
     # Schema group: pgfast schema [subcommand]
@@ -818,6 +844,12 @@ def create_parser() -> argparse.ArgumentParser:
         "--no-depends",
         action="store_true",
         help="Don't auto-depend on latest migration (for parallel development)",
+    )
+    create_parser.add_argument(
+        "--python",
+        "-p",
+        action="store_true",
+        help="Create Python migration files instead of SQL (for complex data migrations)",
     )
     create_parser.set_defaults(func=cmd_schema_create)
 
