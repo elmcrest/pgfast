@@ -1,8 +1,11 @@
 """Schema management for pgfast."""
 
 import logging
+import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 import asyncpg
 
@@ -16,6 +19,12 @@ from pgfast.exceptions import (
 from pgfast.migrations import Migration
 
 logger = logging.getLogger(__name__)
+
+# Type alias for progress callback
+# Called with (migration, current_index, total_count, status, elapsed_seconds)
+ProgressCallback = Callable[
+    [Migration, int, int, Literal["started", "completed"], float], None
+]
 
 
 class SchemaManager:
@@ -423,6 +432,8 @@ class SchemaManager:
         target: int | None = None,
         dry_run: bool = False,
         force: bool = False,
+        timeout: float | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> list[int]:
         """Apply pending migrations up to target version.
 
@@ -430,6 +441,10 @@ class SchemaManager:
             target: Target version to migrate to (None = apply all pending)
             dry_run: If True, show what would be applied without executing
             force: If True, skip checksum validation
+            timeout: Query timeout in seconds (None = no timeout limit)
+            on_progress: Optional callback for progress updates. Called with
+                (migration, current_index, total_count, status, elapsed_seconds)
+                where status is "started" or "completed"
 
         Returns:
             List of migration versions that were applied (or would be applied in dry-run)
@@ -494,8 +509,9 @@ class SchemaManager:
 
         # Apply migrations
         applied = []
+        total = len(pending)
 
-        for migration in pending:
+        for idx, migration in enumerate(pending, start=1):
             if not migration.up_file.exists():
                 raise MigrationError(
                     f"Migration up file not found: {migration.up_file}"
@@ -503,14 +519,20 @@ class SchemaManager:
 
             logger.info(f"Applying migration {migration.version}: {migration.name}")
 
+            # Notify progress: started
+            if on_progress:
+                on_progress(migration, idx, total, "started", 0.0)
+
+            start_time = time.perf_counter()
+
             try:
                 sql_content = migration.read_sql("up")
                 checksum = migration.calculate_checksum()
 
                 async with self.pool.acquire() as conn:
                     async with conn.transaction():
-                        # Execute migration SQL
-                        await conn.execute(sql_content)
+                        # Execute migration SQL (with custom timeout, None = no limit)
+                        await conn.execute(sql_content, timeout=timeout)
 
                         # Record in tracking table with checksum
                         await conn.execute(
@@ -523,8 +545,13 @@ class SchemaManager:
                             checksum,
                         )
 
+                elapsed = time.perf_counter() - start_time
                 logger.info(f"Successfully applied migration {migration.version}")
                 applied.append(migration.version)
+
+                # Notify progress: completed
+                if on_progress:
+                    on_progress(migration, idx, total, "completed", elapsed)
 
             except asyncpg.PostgresError as e:
                 logger.error(f"Failed to apply migration {migration.version}: {e}")
@@ -542,6 +569,8 @@ class SchemaManager:
         steps: int = 1,
         dry_run: bool = False,
         force: bool = False,
+        timeout: float | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> list[int]:
         """Rollback migrations down to target version or by N steps.
 
@@ -550,6 +579,10 @@ class SchemaManager:
             steps: Number of migrations to rollback (default: 1, ignored if target set)
             dry_run: If True, show what would be rolled back without executing
             force: If True, skip checksum validation
+            timeout: Query timeout in seconds (None = no timeout limit)
+            on_progress: Optional callback for progress updates. Called with
+                (migration, current_index, total_count, status, elapsed_seconds)
+                where status is "started" or "completed"
 
         Returns:
             List of migration versions that were rolled back (or would be in dry-run)
@@ -629,8 +662,9 @@ class SchemaManager:
 
         # Rollback migrations
         rolled_back = []
+        total = len(to_rollback)
 
-        for migration in to_rollback:
+        for idx, migration in enumerate(to_rollback, start=1):
             if not migration.down_file.exists():
                 raise MigrationError(
                     f"Migration down file not found: {migration.down_file}"
@@ -638,13 +672,19 @@ class SchemaManager:
 
             logger.info(f"Rolling back migration {migration.version}: {migration.name}")
 
+            # Notify progress: started
+            if on_progress:
+                on_progress(migration, idx, total, "started", 0.0)
+
+            start_time = time.perf_counter()
+
             try:
                 sql_content = migration.read_sql("down")
 
                 async with self.pool.acquire() as conn:
                     async with conn.transaction():
-                        # Execute rollback SQL
-                        await conn.execute(sql_content)
+                        # Execute rollback SQL (with custom timeout, None = no limit)
+                        await conn.execute(sql_content, timeout=timeout)
 
                         # Remove from tracking table
                         await conn.execute(
@@ -652,8 +692,13 @@ class SchemaManager:
                             migration.version,
                         )
 
+                elapsed = time.perf_counter() - start_time
                 logger.info(f"Successfully rolled back migration {migration.version}")
                 rolled_back.append(migration.version)
+
+                # Notify progress: completed
+                if on_progress:
+                    on_progress(migration, idx, total, "completed", elapsed)
 
             except asyncpg.PostgresError as e:
                 logger.error(f"Failed to rollback migration {migration.version}: {e}")

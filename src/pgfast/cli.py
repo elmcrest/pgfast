@@ -206,16 +206,29 @@ def cmd_schema_up(args: argparse.Namespace) -> None:
 
                 return
 
+            # Progress callback for real-time output
+            def on_progress(migration, current, total, status, elapsed):
+                if status == "started":
+                    print(
+                        f"  [{current}/{total}] {migration.version}_{migration.name}...",
+                        end=" ",
+                        flush=True,
+                    )
+                else:  # completed
+                    print(f"{GREEN}done{RESET} ({elapsed:.2f}s)")
+
             # Apply migrations
-            print("Checking for pending migrations...")
+            print(f"Applying {len(pending)} migration(s)...")
             applied = await manager.schema_up(
-                target=args.target, dry_run=False, force=args.force
+                target=args.target,
+                dry_run=False,
+                force=args.force,
+                timeout=args.timeout,
+                on_progress=on_progress,
             )
 
             if applied:
-                print(f"\n{GREEN}✓ Applied {len(applied)} migration(s):{RESET}")
-                for version in applied:
-                    print(f"  - {version}")
+                print(f"\n{GREEN}✓ Applied {len(applied)} migration(s){RESET}")
             else:
                 print(f"{YELLOW}No pending migrations to apply.{RESET}")
 
@@ -298,16 +311,30 @@ def cmd_schema_down(args: argparse.Namespace) -> None:
 
                 return
 
+            # Progress callback for real-time output
+            def on_progress(migration, current, total, status, elapsed):
+                if status == "started":
+                    print(
+                        f"  [{current}/{total}] {migration.version}_{migration.name}...",
+                        end=" ",
+                        flush=True,
+                    )
+                else:  # completed
+                    print(f"{GREEN}done{RESET} ({elapsed:.2f}s)")
+
             # Rollback migrations
-            print("Rolling back migrations...")
+            print(f"Rolling back {len(to_rollback_versions)} migration(s)...")
             rolled_back = await manager.schema_down(
-                target=args.target, steps=args.steps, dry_run=False, force=args.force
+                target=args.target,
+                steps=args.steps,
+                dry_run=False,
+                force=args.force,
+                timeout=args.timeout,
+                on_progress=on_progress,
             )
 
             if rolled_back:
-                print(f"\n{GREEN}✓ Rolled back {len(rolled_back)} migration(s):{RESET}")
-                for version in rolled_back:
-                    print(f"  - {version}")
+                print(f"\n{GREEN}✓ Rolled back {len(rolled_back)} migration(s){RESET}")
             else:
                 print(f"{YELLOW}No migrations to rollback.{RESET}")
 
@@ -810,6 +837,12 @@ def create_parser() -> argparse.ArgumentParser:
     up_parser.add_argument(
         "--force", action="store_true", help="Skip checksum validation"
     )
+    up_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Query timeout in seconds (default: no limit)",
+    )
     up_parser.set_defaults(func=cmd_schema_up)
 
     # schema down
@@ -831,6 +864,12 @@ def create_parser() -> argparse.ArgumentParser:
     )
     down_parser.add_argument(
         "--force", action="store_true", help="Skip checksum validation"
+    )
+    down_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Query timeout in seconds (default: no limit)",
     )
     down_parser.set_defaults(func=cmd_schema_down)
 
