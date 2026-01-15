@@ -916,3 +916,330 @@ async def test_discover_migrations_in_subdirectories(manager, tmp_path):
         )
         table_names = {row["tablename"] for row in tables}
         assert table_names == {"tenants", "locations", "appointments"}
+
+
+# ==================== Python Migration Integration Tests ====================
+
+
+async def test_python_migration_discovery(manager, tmp_path):
+    """Test that Python migrations are discovered alongside SQL migrations."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create an SQL migration
+    (migrations_dir / "20250101000000_create_table_up.sql").write_text(
+        "CREATE TABLE sql_table (id SERIAL PRIMARY KEY);"
+    )
+    (migrations_dir / "20250101000000_create_table_down.sql").write_text(
+        "DROP TABLE sql_table;"
+    )
+
+    # Create a Python migration
+    (migrations_dir / "20250102000000_populate_data_up.py").write_text("""
+# depends_on: 20250101000000
+
+async def migrate(conn):
+    await conn.execute("INSERT INTO sql_table DEFAULT VALUES")
+""")
+    (migrations_dir / "20250102000000_populate_data_down.py").write_text("""
+async def migrate(conn):
+    await conn.execute("DELETE FROM sql_table")
+""")
+
+    # Discover migrations
+    migrations = manager._discover_migrations()
+
+    assert len(migrations) == 2
+
+    sql_migration = next(m for m in migrations if m.migration_type == "sql")
+    py_migration = next(m for m in migrations if m.migration_type == "python")
+
+    assert sql_migration.version == 20250101000000
+    assert sql_migration.name == "create_table"
+
+    assert py_migration.version == 20250102000000
+    assert py_migration.name == "populate_data"
+    assert py_migration.dependencies == [20250101000000]
+
+
+async def test_python_migration_schema_up(manager, tmp_path):
+    """Test applying Python migrations."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create a Python migration that creates a table
+    (migrations_dir / "20250101000000_create_py_table_up.py").write_text("""
+async def migrate(conn):
+    await conn.execute('''
+        CREATE TABLE python_created_table (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_by TEXT DEFAULT 'python_migration'
+        )
+    ''')
+""")
+    (migrations_dir / "20250101000000_create_py_table_down.py").write_text("""
+async def migrate(conn):
+    await conn.execute("DROP TABLE python_created_table")
+""")
+
+    # Apply migration
+    applied = await manager.schema_up()
+
+    assert applied == [20250101000000]
+
+    # Verify table exists
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'python_created_table'"
+        )
+        assert result == 1
+
+        # Verify table has expected columns
+        columns = await conn.fetch(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'python_created_table'"
+        )
+        column_names = {row["column_name"] for row in columns}
+        assert column_names == {"id", "name", "created_by"}
+
+
+async def test_python_migration_schema_down(manager, tmp_path):
+    """Test rolling back Python migrations."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create a Python migration
+    (migrations_dir / "20250101000000_create_py_rollback_up.py").write_text("""
+async def migrate(conn):
+    await conn.execute("CREATE TABLE py_rollback_test (id SERIAL PRIMARY KEY)")
+""")
+    (migrations_dir / "20250101000000_create_py_rollback_down.py").write_text("""
+async def migrate(conn):
+    await conn.execute("DROP TABLE py_rollback_test")
+""")
+
+    # Apply migration
+    await manager.schema_up()
+
+    # Verify table exists
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'py_rollback_test'"
+        )
+        assert result == 1
+
+    # Rollback
+    rolled_back = await manager.schema_down()
+
+    assert rolled_back == [20250101000000]
+
+    # Verify table is gone
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'py_rollback_test'"
+        )
+        assert result == 0
+
+
+async def test_mixed_sql_and_python_migrations(manager, tmp_path):
+    """Test applying mixed SQL and Python migrations with dependencies."""
+    migrations_dir = tmp_path / "migrations"
+
+    # SQL migration 1: Create users table
+    (migrations_dir / "20250101000000_create_users_up.sql").write_text(
+        "CREATE TABLE mixed_users (id SERIAL PRIMARY KEY, name TEXT);"
+    )
+    (migrations_dir / "20250101000000_create_users_down.sql").write_text(
+        "DROP TABLE mixed_users;"
+    )
+
+    # Python migration 2: Populate initial data (depends on SQL migration)
+    (migrations_dir / "20250102000000_populate_users_up.py").write_text("""
+# depends_on: 20250101000000
+
+async def migrate(conn):
+    await conn.execute("INSERT INTO mixed_users (name) VALUES ('Alice'), ('Bob')")
+""")
+    (migrations_dir / "20250102000000_populate_users_down.py").write_text("""
+async def migrate(conn):
+    await conn.execute("DELETE FROM mixed_users WHERE name IN ('Alice', 'Bob')")
+""")
+
+    # SQL migration 3: Add email column (depends on Python migration)
+    (migrations_dir / "20250103000000_add_email_up.sql").write_text(
+        "-- depends_on: 20250102000000\nALTER TABLE mixed_users ADD COLUMN email TEXT;"
+    )
+    (migrations_dir / "20250103000000_add_email_down.sql").write_text(
+        "ALTER TABLE mixed_users DROP COLUMN email;"
+    )
+
+    # Apply all migrations
+    applied = await manager.schema_up()
+
+    assert applied == [20250101000000, 20250102000000, 20250103000000]
+
+    # Verify table exists with data and email column
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval("SELECT COUNT(*) FROM mixed_users")
+        assert result == 2
+
+        # Verify email column exists
+        columns = await conn.fetch(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'mixed_users'"
+        )
+        column_names = {row["column_name"] for row in columns}
+        assert "email" in column_names
+
+
+async def test_python_migration_error_handling(manager, tmp_path):
+    """Test error handling in Python migrations."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create a Python migration with invalid SQL
+    (migrations_dir / "20250101000000_bad_python_up.py").write_text("""
+async def migrate(conn):
+    await conn.execute("THIS IS NOT VALID SQL")
+""")
+    (migrations_dir / "20250101000000_bad_python_down.py").write_text("""
+async def migrate(conn):
+    pass
+""")
+
+    # Should raise MigrationError
+    with pytest.raises(MigrationError):
+        await manager.schema_up()
+
+    # Verify nothing was recorded (transaction rollback)
+    current_version = await manager.get_current_version()
+    assert current_version == 0
+
+
+async def test_python_migration_with_complex_logic(manager, tmp_path):
+    """Test Python migration with complex business logic."""
+    migrations_dir = tmp_path / "migrations"
+
+    # First create a table with SQL
+    (migrations_dir / "20250101000000_create_products_up.sql").write_text(
+        "CREATE TABLE products (id SERIAL PRIMARY KEY, name TEXT, price NUMERIC);"
+    )
+    (migrations_dir / "20250101000000_create_products_down.sql").write_text(
+        "DROP TABLE products;"
+    )
+
+    # Python migration that does complex data manipulation
+    (migrations_dir / "20250102000000_seed_products_up.py").write_text("""
+# depends_on: 20250101000000
+import hashlib
+
+async def migrate(conn):
+    # Complex logic that would be hard to express in SQL
+    products = [
+        ('Widget', 9.99),
+        ('Gadget', 19.99),
+        ('Thingamajig', 29.99),
+    ]
+
+    for name, base_price in products:
+        # Calculate discount based on name hash (silly example, but shows Python logic)
+        name_hash = int(hashlib.md5(name.encode()).hexdigest()[:8], 16)
+        discount = (name_hash % 10) / 100  # 0-9% discount
+        final_price = round(base_price * (1 - discount), 2)
+
+        await conn.execute(
+            "INSERT INTO products (name, price) VALUES ($1, $2)",
+            name, final_price
+        )
+""")
+    (migrations_dir / "20250102000000_seed_products_down.py").write_text("""
+async def migrate(conn):
+    await conn.execute("DELETE FROM products WHERE name IN ('Widget', 'Gadget', 'Thingamajig')")
+""")
+
+    # Apply migrations
+    applied = await manager.schema_up()
+
+    assert applied == [20250101000000, 20250102000000]
+
+    # Verify products were created
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval("SELECT COUNT(*) FROM products")
+        assert result == 3
+
+
+async def test_create_python_migration(manager):
+    """Test creating Python migration files via SchemaManager."""
+    target_dir = manager.migrations_dirs[0]
+
+    up_file, down_file = manager.create_migration(
+        "test_python_creation", target_dir, python=True
+    )
+
+    assert up_file.exists()
+    assert down_file.exists()
+    assert "_up.py" in up_file.name
+    assert "_down.py" in down_file.name
+    assert "test_python_creation" in up_file.name
+
+    # Check content
+    up_content = up_file.read_text()
+    assert "async def migrate(conn" in up_content
+    assert "asyncpg.Connection" in up_content
+    assert "Migration: test_python_creation" in up_content
+
+    down_content = down_file.read_text()
+    assert "async def migrate(conn" in down_content
+    assert "rollback" in down_content
+
+
+async def test_python_migration_auto_dependency(manager):
+    """Test that Python migrations auto-depend on latest migration."""
+    target_dir = manager.migrations_dirs[0]
+
+    # Create first SQL migration
+    up1, down1 = manager.create_migration("first_sql", target_dir)
+
+    # Create Python migration (should depend on SQL migration)
+    up2, down2 = manager.create_migration("second_python", target_dir, python=True)
+
+    content2 = up2.read_text()
+    first_version = up1.stem.split("_")[0]
+
+    assert "# depends_on:" in content2
+    assert first_version in content2
+
+
+async def test_python_migration_checksum_validation(manager, tmp_path):
+    """Test checksum validation for Python migrations."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create and apply Python migration
+    up_file = migrations_dir / "20250101000000_py_checksum_up.py"
+    down_file = migrations_dir / "20250101000000_py_checksum_down.py"
+
+    up_file.write_text("""
+async def migrate(conn):
+    await conn.execute("CREATE TABLE py_checksum_test (id SERIAL PRIMARY KEY)")
+""")
+    down_file.write_text("""
+async def migrate(conn):
+    await conn.execute("DROP TABLE py_checksum_test")
+""")
+
+    # Apply migration
+    await manager.schema_up()
+
+    # Verify checksums
+    results = await manager.verify_checksums()
+    assert len(results["valid"]) == 1
+    assert len(results["invalid"]) == 0
+    assert "20250101000000" in results["valid"][0]
+
+    # Modify the Python migration file
+    up_file.write_text("""
+async def migrate(conn):
+    # Modified!
+    await conn.execute("CREATE TABLE py_checksum_test (id SERIAL PRIMARY KEY)")
+""")
+
+    # Verify checksums again - should detect modification
+    results = await manager.verify_checksums()
+    assert len(results["valid"]) == 0
+    assert len(results["invalid"]) == 1
+    assert "CHECKSUM MISMATCH" in results["invalid"][0]

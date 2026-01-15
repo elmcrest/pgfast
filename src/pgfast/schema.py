@@ -47,6 +47,8 @@ class SchemaManager:
     def _discover_in_directory(self, migrations_dir: Path) -> list[Migration]:
         """Discover migrations in a single directory and its subdirectories.
 
+        Discovers both SQL migrations (*_up.sql) and Python migrations (*_up.py).
+
         Args:
             migrations_dir: Path to migrations directory
 
@@ -59,38 +61,63 @@ class SchemaManager:
         if not migrations_dir.exists():
             return []
 
-        # Find all _up.sql files recursively (supports subdirectory organization)
-        up_files = list(migrations_dir.glob("**/*_up.sql"))
-
         migrations = []
-        for up_file in up_files:
-            # Parse filename: {version}_{name}_up.sql
-            parts = up_file.stem.split("_")
-            if len(parts) < 3:
-                raise MigrationError(f"Invalid migration filename: {up_file.name}")
 
-            version_str = parts[0]
-            name = "_".join(parts[1:-1])  # Everything between version and "up"
+        # Find all _up.sql files recursively (supports subdirectory organization)
+        for up_file in migrations_dir.glob("**/*_up.sql"):
+            migration = self._parse_migration_file(up_file, "sql")
+            if migration:
+                migrations.append(migration)
 
-            try:
-                version = int(version_str)
-            except ValueError:
-                raise MigrationError(f"Invalid version in filename: {up_file.name}")
-
-            # Find corresponding down file
-            down_file = up_file.parent / f"{version_str}_{name}_down.sql"
-
-            migrations.append(
-                Migration(
-                    version=version,
-                    name=name,
-                    up_file=up_file,
-                    down_file=down_file,
-                    source_dir=migrations_dir,
-                )
-            )
+        # Find all _up.py files recursively (Python migrations)
+        for up_file in migrations_dir.glob("**/*_up.py"):
+            migration = self._parse_migration_file(up_file, "python")
+            if migration:
+                migrations.append(migration)
 
         return migrations
+
+    def _parse_migration_file(
+        self, up_file: Path, migration_type: Literal["sql", "python"]
+    ) -> Migration | None:
+        """Parse a migration file and return a Migration object.
+
+        Args:
+            up_file: Path to the up migration file
+            migration_type: Either "sql" or "python"
+
+        Returns:
+            Migration object or None if parsing fails
+
+        Raises:
+            MigrationError: If migration files are malformed
+        """
+        extension = ".sql" if migration_type == "sql" else ".py"
+
+        # Parse filename: {version}_{name}_up.{ext}
+        parts = up_file.stem.split("_")
+        if len(parts) < 3:
+            raise MigrationError(f"Invalid migration filename: {up_file.name}")
+
+        version_str = parts[0]
+        name = "_".join(parts[1:-1])  # Everything between version and "up"
+
+        try:
+            version = int(version_str)
+        except ValueError:
+            raise MigrationError(f"Invalid version in filename: {up_file.name}")
+
+        # Find corresponding down file
+        down_file = up_file.parent / f"{version_str}_{name}_down{extension}"
+
+        return Migration(
+            version=version,
+            name=name,
+            up_file=up_file,
+            down_file=down_file,
+            source_dir=up_file.parent,
+            migration_type=migration_type,
+        )
 
     def _discover_migrations(self) -> list[Migration]:
         """Discover all migrations across all configured directories.
@@ -399,32 +426,38 @@ class SchemaManager:
             direction: Either "up" or "down"
 
         Returns:
-            Dictionary with preview information including SQL snippet
+            Dictionary with preview information including code snippet
         """
-        sql_content = migration.read_sql(direction)
-        lines = sql_content.split("\n")
+        # Read file content (SQL or Python)
+        file_path = migration.up_file if direction == "up" else migration.down_file
+        content = file_path.read_text() if file_path.exists() else ""
+        lines = content.split("\n")
 
-        # Get first 50 lines of SQL (excluding empty lines and comments at the start)
-        sql_lines = []
+        # Determine comment prefix based on migration type
+        comment_prefix = "#" if migration.migration_type == "python" else "--"
+
+        # Get first 50 lines (excluding empty lines and comments at the start)
+        preview_lines = []
         for line in lines:
             stripped = line.strip()
             # Include the line if it's not empty or if we've already started collecting
-            if sql_lines or (stripped and not stripped.startswith("--")):
-                sql_lines.append(line)
-                if len(sql_lines) >= 50:
+            if preview_lines or (stripped and not stripped.startswith(comment_prefix)):
+                preview_lines.append(line)
+                if len(preview_lines) >= 50:
                     break
 
-        sql_preview = "\n".join(sql_lines)
+        code_preview = "\n".join(preview_lines)
         if len(lines) > 50:
-            sql_preview += f"\n... ({len(lines) - 50} more lines)"
+            code_preview += f"\n... ({len(lines) - 50} more lines)"
 
         return {
             "version": migration.version,
             "name": migration.name,
             "dependencies": migration.dependencies,
             "checksum": migration.calculate_checksum(),
-            "sql_preview": sql_preview,
+            "sql_preview": code_preview,  # Keep key name for backward compatibility
             "total_lines": len(lines),
+            "migration_type": migration.migration_type,
         }
 
     async def schema_up(
@@ -526,13 +559,18 @@ class SchemaManager:
             start_time = time.perf_counter()
 
             try:
-                sql_content = migration.read_sql("up")
                 checksum = migration.calculate_checksum()
 
                 async with self.pool.acquire() as conn:
                     async with conn.transaction():
-                        # Execute migration SQL (with custom timeout, None = no limit)
-                        await conn.execute(sql_content, timeout=timeout)
+                        # Execute migration (SQL or Python)
+                        if migration.migration_type == "python":
+                            migrate_func = migration.load_python_migrate_func("up")
+                            await migrate_func(conn)
+                        else:
+                            sql_content = migration.read_sql("up")
+                            # Execute migration SQL (with custom timeout, None = no limit)
+                            await conn.execute(sql_content, timeout=timeout)
 
                         # Record in tracking table with checksum
                         await conn.execute(
@@ -560,6 +598,18 @@ class SchemaManager:
                     f"({migration.name}): {e}",
                     applied_migrations=applied,
                 ) from e
+            except Exception as e:
+                # Catch Python migration errors
+                if migration.migration_type == "python":
+                    logger.error(
+                        f"Failed to apply Python migration {migration.version}: {e}"
+                    )
+                    raise MigrationError(
+                        f"Failed to apply Python migration {migration.version} "
+                        f"({migration.name}): {e}",
+                        applied_migrations=applied,
+                    ) from e
+                raise
 
         return applied
 
@@ -679,12 +729,16 @@ class SchemaManager:
             start_time = time.perf_counter()
 
             try:
-                sql_content = migration.read_sql("down")
-
                 async with self.pool.acquire() as conn:
                     async with conn.transaction():
-                        # Execute rollback SQL (with custom timeout, None = no limit)
-                        await conn.execute(sql_content, timeout=timeout)
+                        # Execute rollback (SQL or Python)
+                        if migration.migration_type == "python":
+                            migrate_func = migration.load_python_migrate_func("down")
+                            await migrate_func(conn)
+                        else:
+                            sql_content = migration.read_sql("down")
+                            # Execute rollback SQL (with custom timeout, None = no limit)
+                            await conn.execute(sql_content, timeout=timeout)
 
                         # Remove from tracking table
                         await conn.execute(
@@ -706,11 +760,26 @@ class SchemaManager:
                     f"Failed to rollback migration {migration.version} "
                     f"({migration.name}): {e}"
                 ) from e
+            except Exception as e:
+                # Catch Python migration errors
+                if migration.migration_type == "python":
+                    logger.error(
+                        f"Failed to rollback Python migration {migration.version}: {e}"
+                    )
+                    raise MigrationError(
+                        f"Failed to rollback Python migration {migration.version} "
+                        f"({migration.name}): {e}"
+                    ) from e
+                raise
 
         return rolled_back
 
     def create_migration(
-        self, name: str, target_dir: str | Path, auto_depend: bool = True
+        self,
+        name: str,
+        target_dir: str | Path,
+        auto_depend: bool = True,
+        python: bool = False,
     ) -> tuple[Path, Path]:
         """Create a new migration file pair (up and down) in specified directory.
 
@@ -723,6 +792,7 @@ class SchemaManager:
             name: Human-readable migration name (e.g., "add_users_table")
             target_dir: Directory to create migration files in
             auto_depend: If True (default), automatically depend on the latest migration
+            python: If True, create Python migration files instead of SQL
 
         Returns:
             Tuple of (up_file_path, down_file_path)
@@ -736,12 +806,13 @@ class SchemaManager:
         # Get existing migrations across ALL directories to determine dependencies
         existing_migrations = self._discover_migrations()
 
-        # Determine dependency comment
+        # Determine dependency comment (use # for Python, -- for SQL)
         dependency_comment = ""
         if auto_depend and existing_migrations:
             # Get the latest migration version across all directories
             latest = max(existing_migrations, key=lambda m: m.version)
-            dependency_comment = f"-- depends_on: {latest.version}\n"
+            comment_char = "#" if python else "--"
+            dependency_comment = f"{comment_char} depends_on: {latest.version}\n"
 
         # Generate timestamp version with milliseconds to avoid conflicts
         # Format: YYYYMMDDHHMMSSfff (17 digits)
@@ -752,32 +823,82 @@ class SchemaManager:
         clean_name = name.replace(" ", "_").lower()
         clean_name = "".join(c for c in clean_name if c.isalnum() or c == "_")
 
+        # Determine file extension
+        extension = ".py" if python else ".sql"
+
         # Create file paths and ensure uniqueness
-        up_file = target_path / f"{version}_{clean_name}_up.sql"
-        down_file = target_path / f"{version}_{clean_name}_down.sql"
+        up_file = target_path / f"{version}_{clean_name}_up{extension}"
+        down_file = target_path / f"{version}_{clean_name}_down{extension}"
 
         # Check if ANY migration with this version exists (not just same name)
         # This prevents version conflicts when creating migrations with different names rapidly
+        # Check both SQL and Python files
         counter = 0
         while any(
-            f.stem.startswith(version) for f in target_path.glob(f"{version}*_up.sql")
+            f.stem.startswith(version)
+            for f in list(target_path.glob(f"{version}*_up.sql"))
+            + list(target_path.glob(f"{version}*_up.py"))
         ):
             counter += 1
             version_int = int(version) + counter
             version = str(version_int)
-            up_file = target_path / f"{version}_{clean_name}_up.sql"
-            down_file = target_path / f"{version}_{clean_name}_down.sql"
+            up_file = target_path / f"{version}_{clean_name}_up{extension}"
+            down_file = target_path / f"{version}_{clean_name}_down{extension}"
             if counter > 1000:  # Safety limit
                 raise SchemaError("Unable to generate unique migration version")
 
         # Create files with templates
-        up_template = f"""-- Migration: {name}
+        if python:
+            up_template = f'''# Migration: {name}
+# Created: {datetime.now().isoformat()}
+#
+{dependency_comment}
+import asyncpg
+
+
+async def migrate(conn: asyncpg.Connection) -> None:
+    """Apply migration.
+
+    Args:
+        conn: Database connection (inside a transaction)
+    """
+    # Add your migration code here
+    # Example:
+    # await conn.execute("""
+    #     CREATE TABLE users (
+    #         id SERIAL PRIMARY KEY,
+    #         name TEXT NOT NULL
+    #     )
+    # """)
+    pass
+'''
+
+            down_template = f'''# Migration: {name} (rollback)
+# Created: {datetime.now().isoformat()}
+#
+
+import asyncpg
+
+
+async def migrate(conn: asyncpg.Connection) -> None:
+    """Rollback migration.
+
+    Args:
+        conn: Database connection (inside a transaction)
+    """
+    # Add your rollback code here (should reverse the UP migration)
+    # Example:
+    # await conn.execute("DROP TABLE users")
+    pass
+'''
+        else:
+            up_template = f"""-- Migration: {name}
 -- Created: {datetime.now().isoformat()}
 --
 {dependency_comment}-- Add your UP migration SQL here
 """
 
-        down_template = f"""-- Migration: {name} (rollback)
+            down_template = f"""-- Migration: {name} (rollback)
 -- Created: {datetime.now().isoformat()}
 --
 -- Add your DOWN migration SQL here (should reverse the UP migration)

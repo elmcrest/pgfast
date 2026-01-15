@@ -347,3 +347,225 @@ def test_migration_read_sql_invalid_direction(tmp_path):
         assert False, "Should have raised ValueError"
     except ValueError as e:
         assert "Invalid direction" in str(e)
+
+
+# ==================== Python Migration Tests ====================
+
+
+def test_python_migration_creation(tmp_path):
+    """Test creating Python Migration instance."""
+    up_file = tmp_path / "20250101000000_test_up.py"
+    down_file = tmp_path / "20250101000000_test_down.py"
+
+    migration = Migration(
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
+        migration_type="python",
+    )
+
+    assert migration.version == 20250101000000
+    assert migration.name == "test"
+    assert migration.migration_type == "python"
+
+
+def test_python_migration_is_complete(tmp_path):
+    """Test is_complete property for Python migrations."""
+    up_file = tmp_path / "test_up.py"
+    down_file = tmp_path / "test_down.py"
+
+    migration = Migration(
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
+        migration_type="python",
+    )
+
+    # Initially incomplete
+    assert not migration.is_complete
+
+    # Create up file only
+    up_file.write_text("async def migrate(conn): pass")
+    assert not migration.is_complete
+
+    # Create down file
+    down_file.write_text("async def migrate(conn): pass")
+    assert migration.is_complete
+
+
+def test_python_migration_dependencies_parsing(tmp_path):
+    """Test dependency parsing from Python migration files."""
+    up_file = tmp_path / "test_up.py"
+    down_file = tmp_path / "test_down.py"
+
+    # Create files with Python-style dependency declarations
+    up_file.write_text("""# depends_on: 20240101000000, 20240102000000
+
+async def migrate(conn):
+    pass
+""")
+    down_file.write_text("async def migrate(conn): pass")
+
+    migration = Migration(
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
+        migration_type="python",
+    )
+
+    deps = migration.dependencies
+    assert deps == [20240101000000, 20240102000000]
+
+
+def test_python_migration_dependencies_case_insensitive(tmp_path):
+    """Test that Python dependency declarations are case-insensitive."""
+    up_file = tmp_path / "test_up.py"
+    down_file = tmp_path / "test_down.py"
+
+    up_file.write_text("# DEPENDS_ON: 20240101000000\nasync def migrate(conn): pass")
+    down_file.write_text("async def migrate(conn): pass")
+
+    migration = Migration(
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
+        migration_type="python",
+    )
+
+    assert migration.dependencies == [20240101000000]
+
+
+def test_python_migration_checksum(tmp_path):
+    """Test checksum calculation for Python migrations."""
+    up_file = tmp_path / "test_up.py"
+    down_file = tmp_path / "test_down.py"
+
+    up_file.write_text("async def migrate(conn): await conn.execute('SELECT 1')")
+    down_file.write_text("async def migrate(conn): pass")
+
+    migration = Migration(
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
+        migration_type="python",
+    )
+
+    checksum = migration.calculate_checksum()
+
+    # Should be SHA-256 hex (64 characters)
+    assert len(checksum) == 64
+    assert all(c in "0123456789abcdef" for c in checksum)
+
+
+def test_python_migration_load_function(tmp_path):
+    """Test loading migrate function from Python migration file."""
+    up_file = tmp_path / "test_up.py"
+    down_file = tmp_path / "test_down.py"
+
+    up_file.write_text("""
+async def migrate(conn):
+    '''Test migration'''
+    pass
+""")
+    down_file.write_text("""
+async def migrate(conn):
+    '''Test rollback'''
+    pass
+""")
+
+    migration = Migration(
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
+        migration_type="python",
+    )
+
+    # Load the migrate function
+    migrate_func = migration.load_python_migrate_func("up")
+
+    assert callable(migrate_func)
+    assert migrate_func.__doc__ == "Test migration"
+
+
+def test_python_migration_load_function_invalid_direction(tmp_path):
+    """Test that invalid direction raises ValueError."""
+    up_file = tmp_path / "test_up.py"
+    down_file = tmp_path / "test_down.py"
+
+    up_file.write_text("async def migrate(conn): pass")
+    down_file.write_text("async def migrate(conn): pass")
+
+    migration = Migration(
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
+        migration_type="python",
+    )
+
+    try:
+        migration.load_python_migrate_func("invalid")
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "Invalid direction" in str(e)
+
+
+def test_python_migration_load_function_missing_file(tmp_path):
+    """Test that loading from non-existent file raises FileNotFoundError."""
+    up_file = tmp_path / "test_up.py"
+    down_file = tmp_path / "test_down.py"
+
+    # Don't create the files
+
+    migration = Migration(
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
+        migration_type="python",
+    )
+
+    try:
+        migration.load_python_migrate_func("up")
+        assert False, "Should have raised FileNotFoundError"
+    except FileNotFoundError:
+        pass
+
+
+def test_python_migration_load_function_missing_migrate(tmp_path):
+    """Test that module without migrate function raises AttributeError."""
+    up_file = tmp_path / "test_up.py"
+    down_file = tmp_path / "test_down.py"
+
+    # Create file without migrate function
+    up_file.write_text("def some_other_function(): pass")
+    down_file.write_text("async def migrate(conn): pass")
+
+    migration = Migration(
+        version=20250101000000,
+        name="test",
+        up_file=up_file,
+        down_file=down_file,
+        source_dir=tmp_path,
+        migration_type="python",
+    )
+
+    try:
+        migration.load_python_migrate_func("up")
+        assert False, "Should have raised AttributeError"
+    except AttributeError as e:
+        assert "must define" in str(e)

@@ -1,6 +1,6 @@
 [project]
 name = "pgfast"
-version = "0.6.0"
+version = "0.7.0"
 description = "Lightweight PostgreSQL migration and testing toolkit for FastAPI with raw SQL, dependency management, and isolated test databases"
 readme = "README.md"
 authors = [
