@@ -613,6 +613,228 @@ async def test_auto_dependency_creation(manager, tmp_path):
     assert third_version in content4
 
 
+async def test_schema_up_progress_callback(manager, tmp_path):
+    """Test that schema_up calls progress callback with correct parameters."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create two migrations
+    (migrations_dir / "20250101000000_first_up.sql").write_text(
+        "CREATE TABLE callback_test_1 (id SERIAL PRIMARY KEY);"
+    )
+    (migrations_dir / "20250101000000_first_down.sql").write_text(
+        "DROP TABLE callback_test_1;"
+    )
+    (migrations_dir / "20250102000000_second_up.sql").write_text(
+        "-- depends_on: 20250101000000\nCREATE TABLE callback_test_2 (id SERIAL PRIMARY KEY);"
+    )
+    (migrations_dir / "20250102000000_second_down.sql").write_text(
+        "DROP TABLE callback_test_2;"
+    )
+
+    # Track callback invocations
+    calls = []
+
+    def on_progress(migration, current, total, status, elapsed):
+        calls.append(
+            {
+                "version": migration.version,
+                "name": migration.name,
+                "current": current,
+                "total": total,
+                "status": status,
+                "elapsed": elapsed,
+            }
+        )
+
+    # Apply migrations with callback
+    applied = await manager.schema_up(on_progress=on_progress)
+
+    assert applied == [20250101000000, 20250102000000]
+
+    # Verify callback was called correctly
+    assert len(calls) == 4  # 2 migrations × 2 statuses (started + completed)
+
+    # First migration: started
+    assert calls[0]["version"] == 20250101000000
+    assert calls[0]["current"] == 1
+    assert calls[0]["total"] == 2
+    assert calls[0]["status"] == "started"
+    assert calls[0]["elapsed"] == 0.0
+
+    # First migration: completed
+    assert calls[1]["version"] == 20250101000000
+    assert calls[1]["current"] == 1
+    assert calls[1]["total"] == 2
+    assert calls[1]["status"] == "completed"
+    assert calls[1]["elapsed"] > 0  # Should have some elapsed time
+
+    # Second migration: started
+    assert calls[2]["version"] == 20250102000000
+    assert calls[2]["current"] == 2
+    assert calls[2]["total"] == 2
+    assert calls[2]["status"] == "started"
+
+    # Second migration: completed
+    assert calls[3]["version"] == 20250102000000
+    assert calls[3]["current"] == 2
+    assert calls[3]["total"] == 2
+    assert calls[3]["status"] == "completed"
+    assert calls[3]["elapsed"] > 0
+
+
+async def test_schema_down_progress_callback(manager, tmp_path):
+    """Test that schema_down calls progress callback with correct parameters."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create and apply two migrations
+    (migrations_dir / "20250101000000_first_up.sql").write_text(
+        "CREATE TABLE rollback_test_1 (id SERIAL PRIMARY KEY);"
+    )
+    (migrations_dir / "20250101000000_first_down.sql").write_text(
+        "DROP TABLE rollback_test_1;"
+    )
+    (migrations_dir / "20250102000000_second_up.sql").write_text(
+        "CREATE TABLE rollback_test_2 (id SERIAL PRIMARY KEY);"
+    )
+    (migrations_dir / "20250102000000_second_down.sql").write_text(
+        "DROP TABLE rollback_test_2;"
+    )
+
+    # Apply both migrations first
+    await manager.schema_up()
+
+    # Track callback invocations for rollback
+    calls = []
+
+    def on_progress(migration, current, total, status, elapsed):
+        calls.append(
+            {
+                "version": migration.version,
+                "current": current,
+                "total": total,
+                "status": status,
+                "elapsed": elapsed,
+            }
+        )
+
+    # Rollback both migrations
+    rolled_back = await manager.schema_down(steps=2, on_progress=on_progress)
+
+    assert set(rolled_back) == {20250101000000, 20250102000000}
+
+    # Verify callback was called correctly
+    assert len(calls) == 4  # 2 migrations × 2 statuses
+
+    # Rollback happens in reverse order (newest first)
+    assert calls[0]["version"] == 20250102000000
+    assert calls[0]["current"] == 1
+    assert calls[0]["total"] == 2
+    assert calls[0]["status"] == "started"
+
+    assert calls[1]["version"] == 20250102000000
+    assert calls[1]["status"] == "completed"
+    assert calls[1]["elapsed"] > 0
+
+    assert calls[2]["version"] == 20250101000000
+    assert calls[2]["current"] == 2
+    assert calls[2]["total"] == 2
+    assert calls[2]["status"] == "started"
+
+    assert calls[3]["version"] == 20250101000000
+    assert calls[3]["status"] == "completed"
+
+
+async def test_schema_up_no_callback(manager, tmp_path):
+    """Test that schema_up works fine without a callback (default behavior)."""
+    migrations_dir = tmp_path / "migrations"
+
+    (migrations_dir / "20250101000000_no_callback_up.sql").write_text(
+        "CREATE TABLE no_callback_test (id SERIAL PRIMARY KEY);"
+    )
+    (migrations_dir / "20250101000000_no_callback_down.sql").write_text(
+        "DROP TABLE no_callback_test;"
+    )
+
+    # Apply without callback (on_progress=None is default)
+    applied = await manager.schema_up()
+
+    assert applied == [20250101000000]
+
+
+async def test_schema_up_with_timeout(manager, tmp_path):
+    """Test that schema_up accepts and uses timeout parameter."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create a simple migration
+    up_sql = "CREATE TABLE test_timeout_up (id SERIAL PRIMARY KEY);"
+    down_sql = "DROP TABLE test_timeout_up;"
+
+    (migrations_dir / "20250101000000_test_timeout_up.sql").write_text(up_sql)
+    (migrations_dir / "20250101000000_test_timeout_down.sql").write_text(down_sql)
+
+    # Apply migration with explicit timeout (should work fine for quick migration)
+    applied = await manager.schema_up(timeout=30.0)
+
+    assert applied == [20250101000000]
+
+    # Verify table exists
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'test_timeout_up'"
+        )
+        assert result == 1
+
+
+async def test_schema_down_with_timeout(manager, tmp_path):
+    """Test that schema_down accepts and uses timeout parameter."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create and apply migration
+    up_sql = "CREATE TABLE test_timeout_down (id SERIAL PRIMARY KEY);"
+    down_sql = "DROP TABLE test_timeout_down;"
+
+    (migrations_dir / "20250101000000_test_timeout_down_up.sql").write_text(up_sql)
+    (migrations_dir / "20250101000000_test_timeout_down_down.sql").write_text(down_sql)
+
+    await manager.schema_up()
+
+    # Rollback with explicit timeout
+    rolled_back = await manager.schema_down(timeout=30.0)
+
+    assert rolled_back == [20250101000000]
+
+    # Verify table is gone
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'test_timeout_down'"
+        )
+        assert result == 0
+
+
+async def test_schema_up_with_no_timeout(manager, tmp_path):
+    """Test that schema_up with timeout=None (default) works correctly."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Create a simple migration
+    up_sql = "CREATE TABLE test_no_timeout (id SERIAL PRIMARY KEY);"
+    down_sql = "DROP TABLE test_no_timeout;"
+
+    (migrations_dir / "20250101000000_test_no_timeout_up.sql").write_text(up_sql)
+    (migrations_dir / "20250101000000_test_no_timeout_down.sql").write_text(down_sql)
+
+    # Apply migration with default timeout=None (no limit)
+    applied = await manager.schema_up(timeout=None)
+
+    assert applied == [20250101000000]
+
+    # Verify table exists
+    async with manager.pool.acquire() as conn:
+        result = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'test_no_timeout'"
+        )
+        assert result == 1
+
+
 async def test_discover_migrations_in_subdirectories(manager, tmp_path):
     """Test that migrations in subdirectories are properly discovered.
 

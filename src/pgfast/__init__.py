@@ -14,7 +14,7 @@ from pgfast.exceptions import (
     TestDatabaseError,
 )
 from pgfast.fastapi import create_lifespan, create_rls_dependency, get_db_pool
-from pgfast.schema import SchemaManager
+from pgfast.schema import ProgressCallback, SchemaManager
 from pgfast.testing import (
     DatabaseTestManager,
     cleanup_test_pool,
@@ -33,6 +33,7 @@ __all__ = [
     "create_lifespan",
     "create_rls_dependency",
     "get_db_pool",
+    "ProgressCallback",
     "SchemaManager",
     "DatabaseTestManager",
     "create_test_pool_with_schema",

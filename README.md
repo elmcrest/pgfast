@@ -130,9 +130,11 @@ pgfast schema up                             # Apply pending migrations
 pgfast schema up --target <version>          # Migrate to specific version
 pgfast schema up --dry-run                   # Preview migrations without applying
 pgfast schema up --force                     # Skip checksum validation
+pgfast schema up --timeout <seconds>         # Set query timeout (default: no limit)
 pgfast schema down --steps 1                 # Rollback 1 migration
 pgfast schema down --target <version>        # Rollback to specific version
 pgfast schema down --dry-run                 # Preview rollback
+pgfast schema down --timeout <seconds>       # Set query timeout (default: no limit)
 pgfast schema status                         # Show migration status
 pgfast schema deps                           # Show dependency graph
 pgfast schema verify                         # Verify migration checksums
@@ -179,6 +181,17 @@ Preview migrations before applying them:
 pgfast schema up --dry-run    # See what would be applied
 pgfast schema down --dry-run  # See what would be rolled back
 ```
+
+### Long-Running Migrations
+
+By default, migrations run without a query timeout, allowing complex migrations (large data migrations, index creation, etc.) to complete without interruption. If you need to set a specific timeout:
+
+```bash
+pgfast schema up --timeout 600    # 10 minute timeout
+pgfast schema down --timeout 300  # 5 minute timeout
+```
+
+This overrides the default `command_timeout` from the connection pool configuration, which is typically set for regular queries (default: 60 seconds).
 
 ### Organizing Migrations at Scale
 
