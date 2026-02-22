@@ -2,6 +2,7 @@
 
 import pytest
 
+from pgfast.exceptions import TestDatabaseError
 from pgfast.fixtures import Fixture
 from pgfast.testing import DatabaseTestManager
 
@@ -220,6 +221,72 @@ class TestFixtureDependencyLoading:
 
             posts = await conn.fetch("SELECT COUNT(*) FROM posts")
             assert posts[0]["count"] == 3
+
+    async def test_fixture_loading_is_atomic_by_default(
+        self, isolated_db, db_config, migrations_with_deps
+    ):
+        """A failing fixture should rollback all fixture inserts in default mode."""
+        from pgfast.config import DatabaseConfig
+        from pgfast.schema import SchemaManager
+
+        config = DatabaseConfig(
+            url=db_config.url,
+            migrations_dirs=[
+                str(migrations_with_deps / "module_a" / "migrations"),
+                str(migrations_with_deps / "module_b" / "migrations"),
+            ],
+        )
+
+        schema_manager = SchemaManager(isolated_db, config)
+        await schema_manager.schema_up()
+
+        good_fixture = migrations_with_deps / "good_fixture.sql"
+        bad_fixture = migrations_with_deps / "bad_fixture.sql"
+        good_fixture.write_text("INSERT INTO users (name) VALUES ('Atomic User');")
+        bad_fixture.write_text("INSERT INTO does_not_exist (name) VALUES ('x');")
+
+        manager = DatabaseTestManager(config)
+        with pytest.raises(TestDatabaseError):
+            await manager.load_fixtures(isolated_db, [good_fixture, bad_fixture])
+
+        async with isolated_db.acquire() as conn:
+            count = await conn.fetchval("SELECT COUNT(*) FROM users")
+            assert count == 0
+
+    async def test_fixture_loading_can_be_non_transactional(
+        self, isolated_db, db_config, migrations_with_deps
+    ):
+        """Non-transactional mode should allow partial progress before failure."""
+        from pgfast.config import DatabaseConfig
+        from pgfast.schema import SchemaManager
+
+        config = DatabaseConfig(
+            url=db_config.url,
+            migrations_dirs=[
+                str(migrations_with_deps / "module_a" / "migrations"),
+                str(migrations_with_deps / "module_b" / "migrations"),
+            ],
+        )
+
+        schema_manager = SchemaManager(isolated_db, config)
+        await schema_manager.schema_up()
+
+        good_fixture = migrations_with_deps / "good_non_tx_fixture.sql"
+        bad_fixture = migrations_with_deps / "bad_non_tx_fixture.sql"
+        good_fixture.write_text("INSERT INTO users (name) VALUES ('NonTx User');")
+        bad_fixture.write_text("INSERT INTO does_not_exist (name) VALUES ('x');")
+
+        manager = DatabaseTestManager(config)
+        with pytest.raises(TestDatabaseError):
+            await manager.load_fixtures(
+                isolated_db,
+                [good_fixture, bad_fixture],
+                transactional=False,
+            )
+
+        async with isolated_db.acquire() as conn:
+            count = await conn.fetchval("SELECT COUNT(*) FROM users")
+            assert count == 1
 
 
 @pytest.mark.asyncio

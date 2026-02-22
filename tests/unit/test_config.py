@@ -26,6 +26,61 @@ def test_config_with_shortened_valid_url():
     assert config.url == "postgresql://postgres:postgres@localhost:5432/dbname"
 
 
+def test_config_preserves_query_parameters_in_normalized_url():
+    """Normalization should preserve URL query options (e.g. sslmode)."""
+    config = DatabaseConfig(
+        url="postgresql://user:pass@localhost/dbname?sslmode=require&application_name=pgfast"
+    )
+    assert (
+        config.url
+        == "postgresql://user:pass@localhost:5432/dbname?sslmode=require&application_name=pgfast"
+    )
+
+
+@pytest.mark.parametrize(
+    "input_url, expected_url",
+    [
+        # Pre-encoded $ signs in password (%24 = $)
+        (
+            "postgresql://us%40er:pa%24%24@localhost/db",
+            "postgresql://us%40er:pa%24%24@localhost:5432/db",
+        ),
+        # Pre-encoded slash in password (%2F = /)
+        (
+            "postgresql://user:p%2Fss@localhost/db",
+            "postgresql://user:p%2Fss@localhost:5432/db",
+        ),
+        # Pre-encoded percent in password (%25 = literal %)
+        (
+            "postgresql://user:100%25done@localhost/db",
+            "postgresql://user:100%25done@localhost:5432/db",
+        ),
+        # Plain credentials (no encoding needed) stay unchanged
+        (
+            "postgresql://user:password@localhost/db",
+            "postgresql://user:password@localhost:5432/db",
+        ),
+    ],
+    ids=["encoded-dollar", "encoded-slash", "encoded-percent", "plain"],
+)
+def test_config_no_double_encoding_of_credentials(input_url, expected_url):
+    """Regression: normalization must never double-encode percent sequences.
+
+    A previous bug applied quote() to already-encoded values from urlparse,
+    turning %24 into %2524. This test locks in the correct unquote-then-quote
+    round-trip for every common encoding pattern.
+    """
+    config = DatabaseConfig(url=input_url)
+    assert config.url == expected_url
+    # Explicit regression guard: %25 should only appear when the *input*
+    # itself contained %25 (i.e. a literal percent character).
+    if "%25" not in input_url:
+        assert "%25" not in config.url, (
+            f"Double-encoding detected: {config.url!r} contains %25 "
+            f"but input {input_url!r} did not"
+        )
+
+
 def test_config_with_custom_pool_settings():
     """Should allow custom pool configuration."""
     config = DatabaseConfig(
@@ -159,3 +214,47 @@ def test_from_env_custom_url_var(monkeypatch):
     config = DatabaseConfig.from_env(database_url_var="MY_DB_URL")
     assert config is not None
     assert config.url == "postgresql://custom@host:5432/customdb"
+
+
+def test_from_env_custom_fragment_prefix(monkeypatch):
+    """Should support custom prefix for fragment-based env variables."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("TEST_POSTGRES_HOST", "custom-host")
+    monkeypatch.setenv("TEST_POSTGRES_PORT", "5444")
+    monkeypatch.setenv("TEST_POSTGRES_USER", "testuser")
+    monkeypatch.setenv("TEST_POSTGRES_PASSWORD", "testpass")
+    monkeypatch.setenv("TEST_POSTGRES_DB", "testdb")
+
+    config = DatabaseConfig.from_env(fragment_prefix="TEST_POSTGRES_")
+    assert config is not None
+    assert config.url == "postgresql://testuser:testpass@custom-host:5444/testdb"
+
+
+def test_config_normalizes_ipv6_host():
+    """IPv6 addresses should be bracketed in the normalized URL."""
+    config = DatabaseConfig(url="postgresql://user@[::1]/db")
+    assert config.url == "postgresql://user@[::1]:5432/db"
+
+
+def test_config_normalizes_ipv6_host_already_bracketed():
+    """Already-bracketed IPv6 addresses should not be double-bracketed."""
+    config = DatabaseConfig(url="postgresql://user:pass@[::1]:5433/db")
+    assert config.url == "postgresql://user:pass@[::1]:5433/db"
+
+
+def test_from_env_fragments_do_not_support_query_params(monkeypatch):
+    """Fragment-built URLs have no mechanism for query parameters.
+
+    This is a documented limitation — use DATABASE_URL for options like
+    ?sslmode=require.
+    """
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("POSTGRES_DB", "testdb")
+    monkeypatch.delenv("POSTGRES_HOST", raising=False)
+    monkeypatch.delenv("POSTGRES_PORT", raising=False)
+    monkeypatch.delenv("POSTGRES_USER", raising=False)
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+
+    config = DatabaseConfig.from_env()
+    assert config is not None
+    assert "?" not in config.url

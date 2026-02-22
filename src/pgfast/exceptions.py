@@ -34,7 +34,7 @@ class MigrationError(PgfastError):
 class TestDatabaseError(PgfastError):
     """Raised when test database operations fail."""
 
-    ...
+    __test__ = False  # Prevent pytest from collecting this as a test class
 
 
 class DependencyError(PgfastError):

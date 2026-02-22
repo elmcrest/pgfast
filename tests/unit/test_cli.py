@@ -42,6 +42,49 @@ class TestSchemaDownParser:
         args = parser.parse_args(["schema", "down", "--timeout", "600"])
         assert args.timeout == 600.0
 
+    def test_steps_rejects_zero(self):
+        """--steps should reject zero to avoid unsafe rollback semantics."""
+        parser = create_parser()
+        try:
+            parser.parse_args(["schema", "down", "--steps", "0"])
+            assert False, "Expected parse failure for --steps 0"
+        except SystemExit:
+            pass
+
+    def test_steps_rejects_negative(self):
+        """--steps should reject negative values."""
+        parser = create_parser()
+        try:
+            parser.parse_args(["schema", "down", "--steps", "-1"])
+            assert False, "Expected parse failure for --steps -1"
+        except SystemExit:
+            pass
+
+    def test_steps_rejects_non_numeric(self):
+        """--steps should reject non-numeric input."""
+        parser = create_parser()
+        try:
+            parser.parse_args(["schema", "down", "--steps", "abc"])
+            assert False, "Expected parse failure for --steps abc"
+        except SystemExit:
+            pass
+
+
+class TestTestDbCleanupParser:
+    """Tests for 'pgfast test-db cleanup' argument parsing."""
+
+    def test_cleanup_default_pattern_is_none(self):
+        """cleanup should use built-in default patterns when none are provided."""
+        parser = create_parser()
+        args = parser.parse_args(["test-db", "cleanup"])
+        assert args.pattern is None
+
+    def test_cleanup_accepts_custom_pattern(self):
+        """cleanup should accept explicit LIKE pattern override."""
+        parser = create_parser()
+        args = parser.parse_args(["test-db", "cleanup", "--pattern", "pgfast_custom_%"])
+        assert args.pattern == "pgfast_custom_%"
+
 
 class TestSchemaCreateTargetDir:
     """Tests for migration target directory resolution."""

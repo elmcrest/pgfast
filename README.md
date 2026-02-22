@@ -384,6 +384,9 @@ When using the CLI, you can also use environment variables:
 ## Development
 
 ```bash
+# get a running postgres instance, f.e. with docker:
+docker run --rm --name $POSTGRES_DB -e POSTGRES_USER=$POSTGRES_USER -e POSTGRES_PASSWORD=$POSTGRES_PASSWORD -e POSTGRES_DB=$POSTGRES_DB -p ${POSTGRES_PORT:-5432}:5432 postgres:18-alpine
+
 # Run tests
 pytest              # Sequential
 pytest -n auto      # Parallel (faster)

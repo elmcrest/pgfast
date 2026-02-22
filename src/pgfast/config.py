@@ -1,7 +1,7 @@
 """Database configuration."""
 
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse, urlunparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -60,24 +60,26 @@ class DatabaseConfig(BaseModel):
     def from_env(
         cls,
         database_url_var: str = "DATABASE_URL",
+        fragment_prefix: str = "POSTGRES_",
         require_url: bool = False,
     ) -> "DatabaseConfig | None":
         """Create DatabaseConfig from environment variables.
 
         Priority order:
         1. DATABASE_URL (or custom var name) if present
-        2. Build from POSTGRES_* fragments if DATABASE_URL absent
+        2. Build from fragment-prefix variables if DATABASE_URL absent
         3. Return None if neither present (unless require_url=True, then raise)
 
         Supported fragment variables:
-        - POSTGRES_HOST (default: localhost)
-        - POSTGRES_PORT (default: 5432)
-        - POSTGRES_USER (default: postgres)
-        - POSTGRES_PASSWORD (optional)
-        - POSTGRES_DB (required if using fragments)
+        - <prefix>HOST (default: localhost)
+        - <prefix>PORT (default: 5432)
+        - <prefix>USER (default: postgres)
+        - <prefix>PASSWORD (optional)
+        - <prefix>DB (required if using fragments)
 
         Args:
             database_url_var: Environment variable name for database URL (default: "DATABASE_URL")
+            fragment_prefix: Prefix for fragment-based variables (default: "POSTGRES_")
             require_url: If True, raise ValueError when no config found. If False, return None.
 
         Returns:
@@ -85,7 +87,7 @@ class DatabaseConfig(BaseModel):
 
         Raises:
             ValueError: If require_url=True and no configuration available,
-                       or if using fragments but POSTGRES_DB is missing
+                       or if using fragments but <prefix>DB is missing
 
         Examples:
             # From DATABASE_URL
@@ -100,20 +102,28 @@ class DatabaseConfig(BaseModel):
             # Custom URL variable name
             MY_DB_URL="postgresql://localhost/mydb"
             config = DatabaseConfig.from_env(database_url_var="MY_DB_URL")
+
+            # Custom fragment prefix
+            TEST_POSTGRES_DB="mydb"
+            config = DatabaseConfig.from_env(fragment_prefix="TEST_POSTGRES_")
         """
         import os
+
+        normalized_fragment_prefix = (
+            fragment_prefix if fragment_prefix.endswith("_") else f"{fragment_prefix}_"
+        )
 
         # Priority 1: Check for DATABASE_URL (or custom var)
         url = os.getenv(database_url_var)
         if url:
             return cls(url=url)
 
-        # Priority 2: Try to build from POSTGRES_* fragments
-        postgres_host = os.getenv("POSTGRES_HOST", "localhost")
-        postgres_port = os.getenv("POSTGRES_PORT", "5432")
-        postgres_user = os.getenv("POSTGRES_USER", "postgres")
-        postgres_password = os.getenv("POSTGRES_PASSWORD")
-        postgres_db = os.getenv("POSTGRES_DB")
+        # Priority 2: Try to build from configured fragment prefix
+        postgres_host = os.getenv(f"{normalized_fragment_prefix}HOST", "localhost")
+        postgres_port = os.getenv(f"{normalized_fragment_prefix}PORT", "5432")
+        postgres_user = os.getenv(f"{normalized_fragment_prefix}USER", "postgres")
+        postgres_password = os.getenv(f"{normalized_fragment_prefix}PASSWORD")
+        postgres_db = os.getenv(f"{normalized_fragment_prefix}DB")
 
         # If POSTGRES_DB is set, we have fragment-based config
         if postgres_db:
@@ -130,7 +140,8 @@ class DatabaseConfig(BaseModel):
         if require_url:
             raise ValueError(
                 f"No database configuration found. Either set {database_url_var} "
-                "or POSTGRES_* environment variables (POSTGRES_DB is required)."
+                f"or {normalized_fragment_prefix}* environment variables "
+                f"({normalized_fragment_prefix}DB is required)."
             )
 
         return None
@@ -205,13 +216,24 @@ class DatabaseConfig(BaseModel):
                 else username
             )
 
-            # Reconstruct URL with all components
+            # Reconstruct URL with all components and preserve query options.
+            # urlparse returns username/password with percent-encoding intact,
+            # so we must unquote first to avoid double-encoding (e.g. %24 → %2524).
+            auth = quote(unquote(username), safe="")
             if password:
-                auth = f"{username}:{password}"
-            else:
-                auth = username
+                auth = f"{auth}:{quote(unquote(password), safe='')}"
 
-            normalized_url = f"{scheme}://{auth}@{hostname}:{port}/{database}"
+            # IPv6 hosts must be bracketed in URL netloc
+            host = (
+                f"[{hostname}]"
+                if ":" in hostname and not hostname.startswith("[")
+                else hostname
+            )
+            netloc = f"{auth}@{host}:{port}"
+
+            normalized_url = urlunparse(
+                (scheme, netloc, f"/{database}", "", parsed.query, "")
+            )
 
             # Use object.__setattr__ since model is frozen
             object.__setattr__(self, "url", normalized_url)

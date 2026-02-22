@@ -349,13 +349,20 @@ class SchemaManager:
         return [migration_map[v] for v in sorted_versions]
 
     async def _validate_checksums(
-        self, migrations: list[Migration], force: bool = False
+        self,
+        migrations: list[Migration],
+        force: bool = False,
+        check_missing: bool = True,
     ) -> list[str]:
         """Validate checksums of applied migrations.
 
         Args:
             migrations: List of migrations to validate
             force: If True, skip validation and return empty list
+            check_missing: If True, report applied migrations not present in the
+                provided list as "missing from disk". Set to False when validating
+                a subset of migrations (e.g. during rollback) where absent versions
+                are simply outside the check scope, not missing.
 
         Returns:
             List of checksum mismatch warnings (empty if valid or force=True)
@@ -365,17 +372,26 @@ class SchemaManager:
 
         warnings = []
         stored_checksums = await self.get_migration_checksums()
+        migration_map = {migration.version: migration for migration in migrations}
 
-        for migration in migrations:
-            if migration.version in stored_checksums:
-                current_checksum = migration.calculate_checksum()
-                stored_checksum = stored_checksums[migration.version]
-
-                if current_checksum != stored_checksum:
+        for version in sorted(stored_checksums):
+            migration = migration_map.get(version)
+            if migration is None:
+                if check_missing:
                     warnings.append(
-                        f"Migration {migration.version} ({migration.name}) has been modified "
-                        f"since it was applied (checksum mismatch)"
+                        f"Applied migration {version} is missing from disk "
+                        "(cannot verify checksum)"
                     )
+                continue
+
+            current_checksum = migration.calculate_checksum()
+            stored_checksum = stored_checksums[version]
+
+            if current_checksum != stored_checksum:
+                warnings.append(
+                    f"Migration {migration.version} ({migration.name}) has been modified "
+                    f"since it was applied (checksum mismatch)"
+                )
 
         return warnings
 
@@ -396,25 +412,31 @@ class SchemaManager:
         """
         all_migrations = self._discover_migrations()
         stored_checksums = await self.get_migration_checksums()
+        migration_map = {migration.version: migration for migration in all_migrations}
 
         valid = []
         invalid = []
 
-        for migration in all_migrations:
-            if migration.version in stored_checksums:
-                current_checksum = migration.calculate_checksum()
-                stored_checksum = stored_checksums[migration.version]
+        for version in sorted(stored_checksums):
+            migration = migration_map.get(version)
+            if migration is None:
+                invalid.append(
+                    f"Migration {version}: MISSING FILE "
+                    "(applied migration not found on disk)"
+                )
+                continue
 
-                if current_checksum == stored_checksum:
-                    valid.append(
-                        f"Migration {migration.version} ({migration.name}): OK"
-                    )
-                else:
-                    invalid.append(
-                        f"Migration {migration.version} ({migration.name}): "
-                        f"CHECKSUM MISMATCH (expected {stored_checksum[:8]}..., "
-                        f"got {current_checksum[:8]}...)"
-                    )
+            current_checksum = migration.calculate_checksum()
+            stored_checksum = stored_checksums[version]
+
+            if current_checksum == stored_checksum:
+                valid.append(f"Migration {migration.version} ({migration.name}): OK")
+            else:
+                invalid.append(
+                    f"Migration {migration.version} ({migration.name}): "
+                    f"CHECKSUM MISMATCH (expected {stored_checksum[:8]}..., "
+                    f"got {current_checksum[:8]}...)"
+                )
 
         return {"valid": valid, "invalid": invalid}
 
@@ -650,6 +672,11 @@ class SchemaManager:
             logger.info("No migrations to rollback")
             return []
 
+        if target is None and steps < 1:
+            raise MigrationError(
+                "Invalid rollback steps: steps must be >= 1 when target is not specified"
+            )
+
         # Determine which migrations to rollback (in reverse order)
         if target is not None:
             to_rollback_versions = [v for v in reversed(applied) if v > target]
@@ -671,15 +698,27 @@ class SchemaManager:
                 raise MigrationError(f"Migration files not found for version {version}")
             to_rollback.append(migration)
 
-        # Validate checksums
-        checksum_warnings = await self._validate_checksums(to_rollback, force)
+        # Validate checksums: strict for migrations being rolled back,
+        # advisory for the rest (don't block rollback for unrelated mismatches).
+        rollback_warnings = await self._validate_checksums(
+            to_rollback, force, check_missing=False
+        )
 
-        if checksum_warnings and not force:
-            error_msg = "Checksum validation failed:\n" + "\n".join(checksum_warnings)
+        if rollback_warnings and not force:
+            error_msg = "Checksum validation failed:\n" + "\n".join(rollback_warnings)
             logger.error(error_msg)
             raise ChecksumError(
                 f"{error_msg}\n\nUse --force to override checksum validation."
             )
+
+        other_migrations = [
+            m for m in all_migrations if m.version not in to_rollback_versions
+        ]
+        other_warnings = await self._validate_checksums(
+            other_migrations, force, check_missing=False
+        )
+        for warning in other_warnings:
+            logger.warning(f"Advisory: {warning}")
 
         # Check if any remaining migrations depend on migrations being rolled back
         remaining_versions = set(applied) - set(to_rollback_versions)
@@ -758,7 +797,8 @@ class SchemaManager:
                 logger.error(f"Failed to rollback migration {migration.version}: {e}")
                 raise MigrationError(
                     f"Failed to rollback migration {migration.version} "
-                    f"({migration.name}): {e}"
+                    f"({migration.name}): {e}",
+                    applied_migrations=rolled_back,
                 ) from e
             except Exception as e:
                 # Catch Python migration errors
@@ -768,7 +808,8 @@ class SchemaManager:
                     )
                     raise MigrationError(
                         f"Failed to rollback Python migration {migration.version} "
-                        f"({migration.name}): {e}"
+                        f"({migration.name}): {e}",
+                        applied_migrations=rolled_back,
                     ) from e
                 raise
 
@@ -817,7 +858,10 @@ class SchemaManager:
         # Generate timestamp version with milliseconds to avoid conflicts
         # Format: YYYYMMDDHHMMSSfff (17 digits)
         now = datetime.now()
-        version = now.strftime("%Y%m%d%H%M%S") + f"{now.microsecond // 1000:03d}"
+        base_version = int(
+            now.strftime("%Y%m%d%H%M%S") + f"{now.microsecond // 1000:03d}"
+        )
+        existing_versions = {migration.version for migration in existing_migrations}
 
         # Sanitize name (replace spaces with underscores, remove special chars)
         clean_name = name.replace(" ", "_").lower()
@@ -826,26 +870,28 @@ class SchemaManager:
         # Determine file extension
         extension = ".py" if python else ".sql"
 
-        # Create file paths and ensure uniqueness
-        up_file = target_path / f"{version}_{clean_name}_up{extension}"
-        down_file = target_path / f"{version}_{clean_name}_down{extension}"
-
-        # Check if ANY migration with this version exists (not just same name)
-        # This prevents version conflicts when creating migrations with different names rapidly
-        # Check both SQL and Python files
+        # Two checks are needed to guarantee uniqueness:
+        #  1. existing_versions — versions discovered across ALL configured migration
+        #     directories (prevents cross-directory collisions).
+        #  2. local_conflict (glob) — catches orphan files in target_path that
+        #     _discover_migrations() may skip (e.g. an _up file without _down).
         counter = 0
-        while any(
-            f.stem.startswith(version)
-            for f in list(target_path.glob(f"{version}*_up.sql"))
-            + list(target_path.glob(f"{version}*_up.py"))
-        ):
-            counter += 1
-            version_int = int(version) + counter
+        while True:
+            version_int = base_version + counter
             version = str(version_int)
-            up_file = target_path / f"{version}_{clean_name}_up{extension}"
-            down_file = target_path / f"{version}_{clean_name}_down{extension}"
+            local_conflict = any(
+                f.stem.startswith(version)
+                for f in list(target_path.glob(f"{version}_*_up.sql"))
+                + list(target_path.glob(f"{version}_*_up.py"))
+            )
+            if version_int not in existing_versions and not local_conflict:
+                break
+            counter += 1
             if counter > 1000:  # Safety limit
                 raise SchemaError("Unable to generate unique migration version")
+
+        up_file = target_path / f"{version}_{clean_name}_up{extension}"
+        down_file = target_path / f"{version}_{clean_name}_down{extension}"
 
         # Create files with templates
         if python:
