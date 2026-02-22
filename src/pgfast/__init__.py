@@ -7,7 +7,9 @@ for FastAPI applications using PostgreSQL and asyncpg - all with raw SQL.
 from pgfast.config import DatabaseConfig
 from pgfast.connection import close_pool, create_pool
 from pgfast.exceptions import (
+    ChecksumError,
     ConnectionError,
+    DependencyError,
     MigrationError,
     PgfastError,
     SchemaError,
@@ -27,6 +29,8 @@ __all__ = [
     "create_pool",
     "ConnectionError",
     "MigrationError",
+    "DependencyError",
+    "ChecksumError",
     "SchemaError",
     "PgfastError",
     "TestDatabaseError",

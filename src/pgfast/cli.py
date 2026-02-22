@@ -58,6 +58,17 @@ def confirm(message: str) -> bool:
             print("Please enter 'y' or 'n'")
 
 
+def positive_int(value: str) -> int:
+    """Parse and validate a positive integer CLI argument."""
+    try:
+        parsed = int(value)
+    except (ValueError, TypeError):
+        raise argparse.ArgumentTypeError("must be a positive integer (>= 1)")
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer (>= 1)")
+    return parsed
+
+
 def get_config() -> DatabaseConfig:
     """Get database configuration from environment or defaults.
 
@@ -355,6 +366,17 @@ def cmd_schema_down(args: argparse.Namespace) -> None:
             else:
                 print(f"{YELLOW}No migrations to rollback.{RESET}")
 
+        except MigrationError as e:
+            # Show partial progress if any migrations were rolled back before failure
+            if e.applied_migrations:
+                print(
+                    f"\n{GREEN}✓ Rolled back {len(e.applied_migrations)} migration(s) before failure:{RESET}"
+                )
+                for version in e.applied_migrations:
+                    print(f"  - {version}")
+
+            print(f"\n{RED}ERROR:{RESET} {e}")
+            sys.exit(1)
         except PgfastError as e:
             print(f"\n{RED}ERROR:{RESET} {e}")
             sys.exit(1)
@@ -380,6 +402,10 @@ def cmd_schema_status(args: argparse.Namespace) -> None:
             current_version = await manager.get_current_version()
             applied = await manager.get_applied_migrations()
             pending = await manager.get_pending_migrations()
+            all_migrations = manager._discover_migrations()
+            migration_map = {
+                migration.version: migration for migration in all_migrations
+            }
 
             print(f"\n{BOLD}Current Version:{RESET} {current_version}")
             print(f"{BOLD}Applied Migrations:{RESET} {len(applied)}")
@@ -390,11 +416,7 @@ def cmd_schema_status(args: argparse.Namespace) -> None:
                 rows = []
 
                 for version in applied:
-                    # Find migration name
-                    all_migrations = manager._discover_migrations()
-                    migration = next(
-                        (m for m in all_migrations if m.version == version), None
-                    )
+                    migration = migration_map.get(version)
                     name = migration.name if migration else "unknown"
                     rows.append([str(version), name])
 
@@ -631,35 +653,25 @@ def cmd_fixtures_load(args: argparse.Namespace) -> None:
 
     async def _run():
         config = get_config()
+        manager = DatabaseTestManager(config)
 
         # Determine which fixtures to load
         if args.fixtures:
             # Load specified fixtures
             fixture_paths = [Path(f) for f in args.fixtures]
         else:
-            # Auto-discover fixtures from all fixture directories
-            fixtures_dirs = config.discover_fixtures_dirs()
-
-            if not fixtures_dirs:
-                print(f"{YELLOW}No fixture directories found{RESET}")
-                return
-
-            # Collect all fixtures from all directories (including subdirs)
-            fixture_paths = []
-            for fixtures_dir in fixtures_dirs:
-                if fixtures_dir.exists():
-                    fixture_paths.extend(fixtures_dir.glob("**/*.sql"))
-
-            # Sort by full path for deterministic ordering
-            fixture_paths = sorted(fixture_paths)
+            # Auto-discover fixtures using the same dependency-aware behavior as API usage
+            fixture_paths = manager.discover_fixtures()
 
             if not fixture_paths:
-                print(f"{YELLOW}No fixture files found{RESET}")
+                fixtures_dirs = config.discover_fixtures_dirs()
+                if not fixtures_dirs:
+                    print(f"{YELLOW}No fixture directories found{RESET}")
+                else:
+                    print(f"{YELLOW}No fixture files found{RESET}")
                 return
 
-            print(
-                f"Found {len(fixture_paths)} fixture(s) from {len(fixtures_dirs)} directory(ies):"
-            )
+            print(f"Found {len(fixture_paths)} fixture(s) in dependency order:")
             for fp in fixture_paths:
                 print(f"  - {fp}")
             print()
@@ -683,8 +695,6 @@ def cmd_fixtures_load(args: argparse.Namespace) -> None:
         pool = await create_pool(target_config)
 
         try:
-            manager = DatabaseTestManager(config)
-
             await manager.load_fixtures(pool, fixture_paths)
 
             print(
@@ -759,10 +769,19 @@ def cmd_test_db_cleanup(args: argparse.Namespace) -> None:
 
             try:
                 # Find test databases
-                rows = await admin_conn.fetch(
-                    "SELECT datname FROM pg_database WHERE datname LIKE $1",
-                    args.pattern,
-                )
+                if args.pattern:
+                    rows = await admin_conn.fetch(
+                        "SELECT datname FROM pg_database WHERE datname LIKE $1",
+                        args.pattern,
+                    )
+                else:
+                    rows = await admin_conn.fetch(
+                        """
+                        SELECT datname FROM pg_database
+                        WHERE datname LIKE 'pgfast_test_%'
+                           OR datname LIKE 'pgfast_template_%'
+                        """
+                    )
 
                 if not rows:
                     print(f"{YELLOW}No test databases found to clean up.{RESET}")
@@ -781,6 +800,19 @@ def cmd_test_db_cleanup(args: argparse.Namespace) -> None:
 
                 # Drop each database
                 for db_name in databases:
+                    # Template databases cannot be dropped until the flag is cleared.
+                    # Only issue the UPDATE for actual templates to avoid requiring
+                    # catalog-level privileges when dropping regular test databases.
+                    if db_name.startswith("pgfast_template_"):
+                        await admin_conn.execute(
+                            """
+                            UPDATE pg_database
+                            SET datistemplate = FALSE
+                            WHERE datname = $1
+                            """,
+                            db_name,
+                        )
+
                     # Terminate connections
                     await admin_conn.execute(
                         """
@@ -882,7 +914,7 @@ def create_parser() -> argparse.ArgumentParser:
     down_parser.add_argument(
         "--steps",
         "-s",
-        type=int,
+        type=positive_int,
         default=1,
         help="Number of migrations to rollback (default: 1)",
     )
@@ -981,8 +1013,8 @@ def create_parser() -> argparse.ArgumentParser:
     cleanup_parser.add_argument(
         "--pattern",
         "-p",
-        default="pgfast_test_%",
-        help="Pattern to match (default: pgfast_test_%%)",
+        default=None,
+        help="Pattern to match (defaults to pgfast_test_%% and pgfast_template_%%)",
     )
     cleanup_parser.set_defaults(func=cmd_test_db_cleanup)
 

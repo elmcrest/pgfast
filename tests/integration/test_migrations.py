@@ -136,6 +136,24 @@ async def test_schema_down(manager, tmp_path):
     assert current_version == 0
 
 
+async def test_schema_down_rejects_non_positive_steps(manager, tmp_path):
+    """Rollback steps must be positive when target is not provided."""
+    migrations_dir = tmp_path / "migrations"
+
+    (migrations_dir / "20250101000000_step_guard_up.sql").write_text(
+        "CREATE TABLE step_guard (id SERIAL PRIMARY KEY);"
+    )
+    (migrations_dir / "20250101000000_step_guard_down.sql").write_text(
+        "DROP TABLE step_guard;"
+    )
+    await manager.schema_up()
+
+    with pytest.raises(MigrationError) as exc_info:
+        await manager.schema_down(steps=0)
+
+    assert "steps must be >= 1" in str(exc_info.value)
+
+
 async def test_pending_migrations(manager, tmp_path):
     """Test getting pending migrations."""
     migrations_dir = tmp_path / "migrations"
@@ -400,6 +418,58 @@ async def test_checksum_validation_with_force_flag(manager, tmp_path):
         assert result == 1
 
 
+async def test_verify_checksums_reports_missing_applied_migration_files(
+    manager, tmp_path
+):
+    """Applied migrations missing on disk should be reported as invalid."""
+    migrations_dir = tmp_path / "migrations"
+
+    up_file = migrations_dir / "20250101000000_missing_up.sql"
+    down_file = migrations_dir / "20250101000000_missing_down.sql"
+    up_file.write_text("CREATE TABLE missing_checksum_table (id SERIAL PRIMARY KEY);")
+    down_file.write_text("DROP TABLE missing_checksum_table;")
+
+    await manager.schema_up()
+
+    # Simulate accidental deletion/rename after migration was applied.
+    up_file.unlink()
+    down_file.unlink()
+
+    results = await manager.verify_checksums()
+    assert len(results["valid"]) == 0
+    assert len(results["invalid"]) == 1
+    assert "MISSING FILE" in results["invalid"][0]
+    assert "20250101000000" in results["invalid"][0]
+
+
+async def test_schema_up_fails_when_applied_migration_file_missing(manager, tmp_path):
+    """schema_up should fail integrity checks when applied migration files vanish."""
+    migrations_dir = tmp_path / "migrations"
+
+    first_up = migrations_dir / "20250101000000_first_up.sql"
+    first_down = migrations_dir / "20250101000000_first_down.sql"
+    first_up.write_text("CREATE TABLE missing_guard_first (id SERIAL PRIMARY KEY);")
+    first_down.write_text("DROP TABLE missing_guard_first;")
+
+    await manager.schema_up()
+
+    # Remove applied migration files, then add a new pending migration.
+    first_up.unlink()
+    first_down.unlink()
+
+    (migrations_dir / "20250102000000_second_up.sql").write_text(
+        "CREATE TABLE missing_guard_second (id SERIAL PRIMARY KEY);"
+    )
+    (migrations_dir / "20250102000000_second_down.sql").write_text(
+        "DROP TABLE missing_guard_second;"
+    )
+
+    with pytest.raises(ChecksumError) as exc_info:
+        await manager.schema_up()
+
+    assert "missing from disk" in str(exc_info.value).lower()
+
+
 async def test_dry_run_schema_up(manager, tmp_path):
     """Test dry-run mode for schema up."""
     migrations_dir = tmp_path / "migrations"
@@ -613,6 +683,48 @@ async def test_auto_dependency_creation(manager, tmp_path):
     assert third_version in content4
 
 
+async def test_create_migration_avoids_cross_directory_version_collision(
+    manager, tmp_path, monkeypatch
+):
+    """New migration versions should be unique across all configured directories."""
+    from datetime import datetime
+
+    from pgfast.config import DatabaseConfig
+    from pgfast.schema import SchemaManager
+
+    dir_a = tmp_path / "module_a" / "migrations"
+    dir_b = tmp_path / "module_b" / "migrations"
+    dir_a.mkdir(parents=True)
+    dir_b.mkdir(parents=True)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2025, 1, 1, 0, 0, 0, 123000, tzinfo=tz)
+
+    monkeypatch.setattr("pgfast.schema.datetime", FixedDatetime)
+    colliding_version = (
+        FixedDatetime.now().strftime("%Y%m%d%H%M%S")
+        + f"{FixedDatetime.now().microsecond // 1000:03d}"
+    )
+
+    # Existing migration in another configured directory with the same timestamp version.
+    (dir_a / f"{colliding_version}_existing_up.sql").write_text("SELECT 1;")
+    (dir_a / f"{colliding_version}_existing_down.sql").write_text("SELECT 1;")
+
+    config = DatabaseConfig(
+        url=manager.config.url,
+        migrations_dirs=[str(dir_a), str(dir_b)],
+    )
+    collision_manager = SchemaManager(pool=manager.pool, config=config)
+
+    up_file, _ = collision_manager.create_migration("new_feature", dir_b)
+    created_version = int(up_file.name.split("_")[0])
+
+    assert created_version > int(colliding_version)
+    assert up_file.exists()
+
+
 async def test_schema_up_progress_callback(manager, tmp_path):
     """Test that schema_up calls progress callback with correct parameters."""
     migrations_dir = tmp_path / "migrations"
@@ -742,6 +854,97 @@ async def test_schema_down_progress_callback(manager, tmp_path):
 
     assert calls[3]["version"] == 20250101000000
     assert calls[3]["status"] == "completed"
+
+
+async def test_schema_down_error_reports_partial_rollback(manager, tmp_path):
+    """Rollback errors should include successfully rolled-back versions."""
+    migrations_dir = tmp_path / "migrations"
+
+    # A
+    (migrations_dir / "20250101000000_partial_a_up.sql").write_text(
+        "CREATE TABLE partial_a (id SERIAL PRIMARY KEY);"
+    )
+    (migrations_dir / "20250101000000_partial_a_down.sql").write_text(
+        "DROP TABLE partial_a;"
+    )
+
+    # B (will fail on rollback)
+    (migrations_dir / "20250102000000_partial_b_up.sql").write_text(
+        "CREATE TABLE partial_b (id SERIAL PRIMARY KEY);"
+    )
+    (migrations_dir / "20250102000000_partial_b_down.sql").write_text(
+        "THIS IS NOT VALID SQL;"
+    )
+
+    # C
+    (migrations_dir / "20250103000000_partial_c_up.sql").write_text(
+        "CREATE TABLE partial_c (id SERIAL PRIMARY KEY);"
+    )
+    (migrations_dir / "20250103000000_partial_c_down.sql").write_text(
+        "DROP TABLE partial_c;"
+    )
+
+    await manager.schema_up()
+
+    with pytest.raises(MigrationError) as exc_info:
+        await manager.schema_down(steps=3)
+
+    # C should have rolled back before B fails.
+    assert exc_info.value.applied_migrations == [20250103000000]
+
+    # Confirm partial rollback state in DB.
+    current_version = await manager.get_current_version()
+    assert current_version == 20250102000000
+
+
+async def test_schema_down_unrelated_checksum_mismatch_does_not_block_rollback(
+    manager, tmp_path
+):
+    """Rollback should succeed when only unrelated migrations have checksum mismatches."""
+    migrations_dir = tmp_path / "migrations"
+
+    # Migration A — will be modified on disk after apply (unrelated to rollback target)
+    up_a = migrations_dir / "20250101000000_unrelated_a_up.sql"
+    down_a = migrations_dir / "20250101000000_unrelated_a_down.sql"
+    up_a.write_text("CREATE TABLE unrelated_a (id SERIAL PRIMARY KEY);")
+    down_a.write_text("DROP TABLE unrelated_a;")
+
+    # Migration B — the one we want to rollback
+    up_b = migrations_dir / "20250102000000_target_b_up.sql"
+    down_b = migrations_dir / "20250102000000_target_b_down.sql"
+    up_b.write_text("CREATE TABLE target_b (id SERIAL PRIMARY KEY);")
+    down_b.write_text("DROP TABLE target_b;")
+
+    await manager.schema_up()
+
+    # Tamper with unrelated migration A on disk
+    up_a.write_text("-- modified\nCREATE TABLE unrelated_a (id SERIAL PRIMARY KEY);")
+
+    # Rolling back only B should succeed despite A's checksum mismatch
+    rolled_back = await manager.schema_down(steps=1)
+    assert rolled_back == [20250102000000]
+
+
+async def test_schema_down_target_checksum_mismatch_blocks_rollback(manager, tmp_path):
+    """Rollback should fail when the migration being rolled back has a checksum mismatch."""
+    migrations_dir = tmp_path / "migrations"
+
+    up = migrations_dir / "20250101000000_target_mismatch_up.sql"
+    down = migrations_dir / "20250101000000_target_mismatch_down.sql"
+    up.write_text("CREATE TABLE target_mismatch (id SERIAL PRIMARY KEY);")
+    down.write_text("DROP TABLE target_mismatch;")
+
+    await manager.schema_up()
+
+    # Tamper with the migration we're about to rollback
+    up.write_text("-- modified\nCREATE TABLE target_mismatch (id SERIAL PRIMARY KEY);")
+
+    with pytest.raises(ChecksumError):
+        await manager.schema_down(steps=1)
+
+    # Migration should still be applied (rollback was blocked)
+    current_version = await manager.get_current_version()
+    assert current_version == 20250101000000
 
 
 async def test_schema_up_no_callback(manager, tmp_path):

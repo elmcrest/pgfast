@@ -208,7 +208,9 @@ class DatabaseTestManager:
 
         logger.info(f"Cleaning up test database: {db_name}")
 
-        # Close all connections to the database
+        # Close all connections to the database.
+        # close_pool is best-effort (swallows exceptions), so always call it
+        # rather than checking is_closing() which races with concurrent cleanup.
         await close_pool(pool)
 
         # Parse DSN to connect to admin database
@@ -298,6 +300,11 @@ class DatabaseTestManager:
                     """,
                     template_name,
                 )
+                # The pool was closed above (line 286) and the template database is
+                # now managed by name via destroy_template_db(), not via the pool
+                # registry.  Remove the stale entry so cleanup_test_db() is never
+                # called with this already-closed pool.
+                _pool_db_names.pop(id(pool), None)
                 logger.info(f"Template database created successfully: {template_name}")
                 return template_name
 
@@ -308,7 +315,6 @@ class DatabaseTestManager:
             # Clean up on failure
             logger.error(f"Failed to create template database: {e}")
             try:
-                await close_pool(pool)
                 await self.cleanup_test_db(pool)
             except Exception:
                 pass  # Best effort cleanup
@@ -442,7 +448,10 @@ class DatabaseTestManager:
         return self._sort_fixtures_by_dependencies(all_fixtures)
 
     async def load_fixtures(
-        self, pool: asyncpg.Pool, fixtures: list[Path | str] | None = None
+        self,
+        pool: asyncpg.Pool,
+        fixtures: list[Path | str] | None = None,
+        transactional: bool = True,
     ) -> None:
         """Load SQL fixture files into the database.
 
@@ -453,6 +462,8 @@ class DatabaseTestManager:
             pool: Connection pool to load fixtures into
             fixtures: List of fixture file paths. If None, auto-discover from all
                      configured fixture directories.
+            transactional: If True (default), load all fixtures in a single
+                transaction so failures rollback the entire batch.
 
         Raises:
             TestDatabaseError: If fixture loading fails
@@ -500,7 +511,8 @@ class DatabaseTestManager:
         logger.info(f"Loading {len(fixture_paths)} fixture(s)")
 
         async with pool.acquire() as conn:
-            for fixture_path in fixture_paths:
+
+            async def _load_fixture(fixture_path: Path) -> None:
                 if not fixture_path.exists():
                     raise TestDatabaseError(
                         f"Fixture file does not exist: {fixture_path}"
@@ -519,6 +531,14 @@ class DatabaseTestManager:
                     raise TestDatabaseError(
                         f"Unexpected error loading fixture {fixture_path}: {e}"
                     ) from e
+
+            if transactional:
+                async with conn.transaction():
+                    for fixture_path in fixture_paths:
+                        await _load_fixture(fixture_path)
+            else:
+                for fixture_path in fixture_paths:
+                    await _load_fixture(fixture_path)
 
         logger.info("Fixtures loaded successfully")
 

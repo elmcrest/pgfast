@@ -1,6 +1,9 @@
 """Unit tests for Migration model."""
 
-from pgfast.migrations import Migration
+from collections.abc import Awaitable, Callable
+from typing import get_args, get_origin
+
+from pgfast.migrations import Migration, PythonMigrateFunc
 
 
 def test_migration_creation(tmp_path):
@@ -569,3 +572,11 @@ def test_python_migration_load_function_missing_migrate(tmp_path):
         assert False, "Should have raised AttributeError"
     except AttributeError as e:
         assert "must define" in str(e)
+
+
+def test_python_migrate_func_type_is_awaitable():
+    """Python migration function alias should require awaitable return type."""
+    assert get_origin(PythonMigrateFunc) is Callable
+    args = get_args(PythonMigrateFunc)
+    assert len(args) == 2
+    assert get_origin(args[1]) is Awaitable

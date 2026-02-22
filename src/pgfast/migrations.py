@@ -2,13 +2,13 @@ import hashlib
 import importlib.util
 import re
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Awaitable, Callable, Literal
 
 import asyncpg
 from pydantic import BaseModel
 
 # Type alias for Python migration function
-PythonMigrateFunc = Callable[[asyncpg.Connection], None]
+PythonMigrateFunc = Callable[[asyncpg.Connection], Awaitable[None]]
 
 
 class Migration(BaseModel):

@@ -14,6 +14,7 @@ import asyncpg
 import pytest
 
 from pgfast.config import DatabaseConfig
+from pgfast.schema import SchemaManager
 from pgfast.testing import (
     DatabaseTestManager,
     cleanup_test_pool,
@@ -31,38 +32,14 @@ def db_config():
 
     Override this in your conftest.py to customize.
     """
-    import os
+    config = DatabaseConfig.from_env(
+        database_url_var="TEST_DATABASE_URL",
+        fragment_prefix="TEST_POSTGRES_",
+    )
 
-    # Try TEST_DATABASE_URL first
-    url = os.getenv("TEST_DATABASE_URL")
-    if url:
+    if config is not None:
         return DatabaseConfig(
-            url=url,
-            min_connections=2,
-            max_connections=5,
-        )
-
-    # Try TEST_POSTGRES_* fragments
-    postgres_host = os.getenv("TEST_POSTGRES_HOST")
-    postgres_port = os.getenv("TEST_POSTGRES_PORT")
-    postgres_user = os.getenv("TEST_POSTGRES_USER")
-    postgres_password = os.getenv("TEST_POSTGRES_PASSWORD")
-    postgres_db = os.getenv("TEST_POSTGRES_DB")
-
-    if postgres_db:
-        # Build URL from TEST_POSTGRES_* fragments
-        host = postgres_host or "localhost"
-        port = postgres_port or "5432"
-        user = postgres_user or "postgres"
-
-        if postgres_password:
-            auth = f"{user}:{postgres_password}"
-        else:
-            auth = user
-
-        url = f"postgresql://{auth}@{host}:{port}/{postgres_db}"
-        return DatabaseConfig(
-            url=url,
+            url=config.url,
             min_connections=2,
             max_connections=5,
         )
@@ -83,15 +60,11 @@ async def template_db(db_config):
     This provides significant speed improvements for large schemas.
     Uses auto-discovery to find all migrations directories.
     """
-    # Check if any migrations exist (use **/*.sql to find migrations in subdirs)
-    migrations_dirs = db_config.discover_migrations_dirs()
-    has_migrations = False
-    for migrations_dir in migrations_dirs:
-        if migrations_dir.exists() and list(migrations_dir.glob("**/*.sql")):
-            has_migrations = True
-            break
-
-    if not has_migrations:
+    schema_manager = SchemaManager(
+        pool=None,  # type: ignore[arg-type] - discovery-only usage
+        config=db_config,
+    )
+    if not schema_manager._discover_migrations():
         # No migrations, skip template creation
         yield None
         return
