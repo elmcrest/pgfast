@@ -656,6 +656,7 @@ def cmd_fixtures_load(args: argparse.Namespace) -> None:
         manager = DatabaseTestManager(config)
 
         # Determine which fixtures to load
+        fixture_paths: list[Path]
         if args.fixtures:
             # Load specified fixtures
             fixture_paths = [Path(f) for f in args.fixtures]

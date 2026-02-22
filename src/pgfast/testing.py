@@ -8,6 +8,7 @@ import asyncio
 import logging
 import uuid
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -450,7 +451,7 @@ class DatabaseTestManager:
     async def load_fixtures(
         self,
         pool: asyncpg.Pool,
-        fixtures: list[Path | str] | None = None,
+        fixtures: Sequence[Path | str] | None = None,
         transactional: bool = True,
     ) -> None:
         """Load SQL fixture files into the database.

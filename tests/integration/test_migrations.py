@@ -890,6 +890,7 @@ async def test_schema_down_error_reports_partial_rollback(manager, tmp_path):
         await manager.schema_down(steps=3)
 
     # C should have rolled back before B fails.
+    assert isinstance(exc_info.value, MigrationError)
     assert exc_info.value.applied_migrations == [20250103000000]
 
     # Confirm partial rollback state in DB.
